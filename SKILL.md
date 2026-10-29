@@ -87,6 +87,10 @@ precision than you have. Say which speed you used.
 13. **Sweep towns, don't sample them.** Once a source covers a candidate town, index every panorama of it and
     rank them all (`sweep.py`); then the next town. A 15 % sample missed the answer that a full sweep put first
     of 9,203. In deep mode, don't settle on a town-level answer before the candidate towns have been swept.
+14. **Judge a match one image at a time, at full size.** Contact sheets and thumbnail grids are for scanning; a
+    thumbnail can neither confirm nor exclude a place. Shown a 24-tile sheet, a vision model called three wrong
+    buildings "same" at 99% and missed the right one; shown one image per candidate, it picked only the right
+    one. In a real case the answer sat on a sheet nobody opened for an hour.
 
 ## Step 1 — Gut call (60 seconds, your own eyes and knowledge, no tools)
 
@@ -133,13 +137,22 @@ uv run ${CLAUDE_SKILL_DIR}/scripts/recon.py original/<photo> --out-dir recon    
 
 It runs, in parallel: deep metadata (`meta.py`), edge/corner crops, OCR with automatic language detection and
 reverse image search on Yandex and Baidu (`intake.py`), text → country signals (`textgeo.py`), object crops
-(`detect.py`), camera calibration (`calib.py`) and the learned world prior (`prior.py`). Read `recon/recon.md`,
-then open the crops it lists — `intake/edges/`, `detect/detect_sheet.jpg`, `intake/ocr.png` — at full size.
+(`detect.py`), camera calibration (`calib.py`) and the learned world prior (`prior.py`); then `compare.py` merges
+every similar image the reverse search returned, ranks them against the photo with MegaLoc and has Gemini check
+the top 24 one image at a time (`compare/compare.md`). Read `recon/recon.md`, then open the crops it lists —
+`intake/edges/`, `detect/detect_sheet.jpg`, `intake/ocr.png` — at full size.
 
 Then reconcile with your gut call:
 - **They agree** → good; go to the decisive checks for that candidate.
 - **They disagree** → find out why before going on: an OCR misread, an unusual scene that fools the model, a
   feature you misjudged. Write the reason down; either side can be wrong.
+- **The model is sure, you are not** → when `prior.py` puts 70% or more on one country, or on one cluster of
+  neighbours (a country and its dependencies), and your gut named another, spend the first decisive check on the
+  model's choice. When people fill the frame, run the prior on a crop of the architecture or landscape too
+  (`imgprep.py zoom original/<photo> --box … --scale 1 --out arch.jpg`, then `prior.py arch.jpg --out-dir
+  prior_arch`): in a real case the whole photo gave the right country 30%; the building crop gave it and its
+  neighbours 88% (GeoCLIP alone 86%, its point 35 km from the answer), while the gut's other country absorbed 40
+  minutes.
 
 What the pieces are worth (details in `references/models.md`):
 - **Metadata**: GPS is a strong lead but must be confirmed by the scene; the UTC offset narrows countries for
@@ -183,10 +196,17 @@ Every legible string is a search query. Use your web-search tool aggressively an
   check current sources before relying on a memorised meta; conventions change.
 
 **Reverse image search** (pre-approved; run it every time unless the answer is already certain):
-- Scripted: `recon.py` already ran Yandex + Baidu on the original plus crops/flips (`recon/intake/rev/`, summary
-  in `recon.md`); re-run on a tight crop of a distinctive object with
+- **People in the frame → paint them out first.** When a person or an outfit fills much of the photo, the
+  engines (Lens included) mostly return outfits and poses. Box the person tightly (a few boxes for arms or a hat are
+  fine; keep steps, railings and walls visible), then search the masked copy:
+  `imgprep.py mask original/<photo> --box x0,y0,x1,y1 --out masked.jpg` → `intake.py masked.jpg --out-dir rev_masked`,
+  and upload `masked.jpg` to Lens. Do it before the first manual search, not after half an hour of outfits.
+- Scripted: `recon.py` already ran Yandex + Baidu on the original plus flips and colour variants
+  (`recon/intake/rev/`, summary in `recon.md`); re-run on a tight crop of a distinctive object with
   `uv run ${CLAUDE_SKILL_DIR}/scripts/intake.py original/<photo> --box x0,y0,x1,y1 --out-dir rev_crop`. Strong for
-  buildings, streets and anything posted in China.
+  buildings, streets and anything posted in China. Every `intake.py` run ends by re-running `compare.py` over
+  **all** the lists saved in the session, so `compare/compare.md` always has every result merged and ranked — the
+  answer is often in a crop's list, not the whole photo's.
 - **Google Lens** through the owner's own browser, when a browser- or computer-control tool for their Chrome is
   available (Claude in Chrome, Codex computer use): open `https://lens.google.com/`, upload the original or a tight crop with the
   browser's file-upload tool, then save the page text and a screenshot into `rev/`. Read "exact matches /
@@ -196,12 +216,23 @@ Every legible string is a search query. Use your web-search tool aggressively an
 - Bing Visual Search and TinEye by hand in the owner's browser are worth a try when the others fail (TinEye is
   best for finding the original, uncropped or older copies of a photo).
 - A hit is the start of a trail: open the source page, read the caption and the rest of the album, then verify
-  the place on the map. A "visually similar" result is a clue, not a location.
-- **Read the whole list before chasing the top hit.** Visual matches are ranked by look, not by place: the first
-  result is often a lookalike, and the right place can sit at rank 10–20. Write down every place the results name,
-  then open first the ones that two independent results name (a place's own page and its builder's or supplier's
-  project page; two engines) and the ones whose name matches text, a logo or even one letter visible in the
-  photo. Check each against two or three fixed features before going deep on one (`references/search.md` §1).
+  the place on the map. `triage.py "<page URL>"` downloads every picture and caption on the page, ranks them
+  against the photo and reads text in the best ones (a sign, an address, the album's hotel). A "visually
+  similar" result is a clue, not a location.
+- **Read the whole list before chasing the top hit — compare.py reads it for you.** Visual matches are ranked by
+  look, not by place: the first result is often a lookalike, and the right place can sit anywhere in the first
+  80, or only in a crop's list. Open Gemini's matches in `compare/compare.md` first (a flag is a lead: confirm it on the
+  full-size image and its page), then its MegaLoc table. Write down every place the results name, then open first
+  the ones that two independent results name (a place's own page and its builder's or supplier's project page;
+  two engines) and the ones whose name matches text, a logo or even one letter visible in the photo. Check each
+  against two or three fixed features before going deep on one (`references/search.md` §1).
+- **Checking a candidate venue** (a hotel, restaurant, gym, shop): its official gallery shows the main building;
+  side wings, terraces and back rooms appear in guests' photos. Gather many into one folder (official gallery,
+  Google Maps photos in the browser, Instagram/Facebook, travel blogs) and rank them all:
+  `compare.py --images web/<venue> --no-lists` (→ `compare/images_<venue>/compare.md`; `--check 48` to have Gemini
+  check more). A venue checked on three photos of its main house is not excluded; in a real case that dropped the
+  answer for 20 more minutes. Near-identical venues (chain fit-outs, climbing walls, hotel rooms) fool Gemini
+  too: in a test it called three photos of a lookalike "same" at 85–95%, so confirm on fixed features.
 
 ## Step 4 — Country (when Step 1–3 did not already settle it)
 
@@ -371,7 +402,9 @@ location becomes known, record it: `photo_session.py truth <folder> --latitude �
 | `photo_session.py` (python3) | archive start/finish, `truth`, `scoreboard`, `list` |
 | `recon.py` | the whole local first pass in one command |
 | `meta.py` | metadata, UTC-offset countries, filename/platform hints, embedded previews, motion-photo video, AI-provenance flags |
-| `intake.py`, `ocr.py`, `imgprep.py`, `exif.py` | crops, variants, OCR (auto language), zooms, `reveal` (read text lost in shadow); Yandex + Baidu reverse image search |
+| `intake.py`, `ocr.py`, `imgprep.py`, `exif.py` | crops, variants, OCR (auto language), zooms, `reveal` (read text lost in shadow), `mask` (paint people out before a reverse search); Yandex + Baidu reverse image search |
+| `compare.py` | every reverse-search result from every list, merged, ranked against the photo with MegaLoc, the top ones checked by Gemini one image at a time; also ranks a folder of a venue's photos (`--images`) |
+| `triage.py` | a lead's page: every picture and caption on it, ranked against the photo, with OCR of the best ones |
 | `textgeo.py` | text → scripts, letters, language, phones (`--phone-pattern` for unreadable digits), domains, postal codes, currency, regional words, brands, places |
 | `opendata.py` | city open-data portals: find a dataset (bus lanes, street trees, hydrants…), filter it, export candidate points |
 | `geodata.py` | country facts, aliases, GeoNames search/reverse/sample, the biggest towns of a region (`towns`), national gazetteers |
@@ -393,9 +426,11 @@ location becomes known, record it: `photo_session.py truth <folder> --latitude �
 ## Budget and stopping
 
 - Quick mode: stop when one decisive check confirms the gut call at the level the user asked for.
-- Reverse search: three different queries/crops with nothing useful → stop and return to the image.
+- Reverse search: three different queries/crops with nothing useful in `compare.md` → stop and return to the image.
 - A lead that has not confirmed in about 15 minutes: go back to every result list you saved (all engines, all
-  crops) and the places they name before widening the search; the answer is often already in them.
+  crops) and the places they name before widening the search; the answer is often already in them. Re-run
+  `compare.py --query <tight crop of the most distinctive part>` (it re-ranks every list against that crop too)
+  and open what it puts on top.
 - Don't scan candidates one by one while they are still inseparable: run a discriminating test first
   (`board.py next` says which).
 - Look only at the machine's top results (top 30 satellite cells, the top 15–40 sweep results and their
@@ -408,6 +443,9 @@ location becomes known, record it: `photo_session.py truth <folder> --latitude �
   `doctor.py --models` pre-downloads the local models (~6.2 GB in `~/.cache/huggingface` and `~/.cache/torch`; MegaLoc is 1.7 GB of it).
 - Shared data caches live in `~/.cache/geoint` (GeoNames 14 MB, brand index 12 MB, panoramas); per-photo
   caches in `.geo-cache/` inside the session folder.
+- `compare.py` and `triage.py --check` send the photo and candidate thumbnails to Google's Gemini API when a key
+  is set (`GEMINI_API_KEY`, or `gemini_env_file` in `config.local.json` naming an env file that holds it); without
+  one they rank locally with MegaLoc only. `doctor.py --network` checks the key and model without spending tokens.
 - Google retired the old Street View lookup endpoint and blocks anonymous thumbnails; `gsv.py` now discovers
   panoramas through Maps coverage tiles and renders views locally. If it breaks again, update the
   `streetlevel` package first.

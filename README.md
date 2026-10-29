@@ -7,10 +7,11 @@ tools, down to street or camera level when the evidence allows. Every photo gets
 a report, evidence images and a scoreboard once the true location is known.
 
 > GeoInt builds on [geo-sleuth](https://github.com/Oldcircle/geo-sleuth) by [Oldcircle](https://github.com/Oldcircle)
-> (MIT). From geo-sleuth: 9 tools, the base of 12 more that GeoInt extended, and part of the documentation and data.
-> New in GeoInt: 13 tools, a rewritten method (97% new), a worldwide clue library, street-level search across 11
-> providers and a per-photo archive with scoring. In all, 80% of the instructions and 47% of the Python code are
-> GeoInt's own; [Credits](#credits) shows which part is which.
+> (MIT). From geo-sleuth: 8 tools, the base of 13 more that GeoInt extended, and part of the documentation and data.
+> New in GeoInt: 15 tools, a rewritten method (97% new), a worldwide clue library, street-level search across 11
+> providers, reverse-search results merged, ranked and checked image by image, and a per-photo archive with scoring.
+> In all, 81% of the instructions and 51% of the Python code are GeoInt's own; [Credits](#credits) shows which part
+> is which.
 
 `SKILL.md` is the method; `references/` holds the playbooks and the worldwide clue library; `scripts/` holds the
 tools.
@@ -28,19 +29,22 @@ Requirements: Python 3.10+, [uv](https://docs.astral.sh/uv/), `curl`; `exiftool`
 script declares its own dependencies and runs with `uv run`. Per-photo archives go to `~/geoint-photos` with
 timestamps in this computer's time zone; set `GEOINT_PHOTOS` / `GEOINT_TZ`, or put
 `{"photos_root": "…", "timezone": "…"}` in a `config.local.json` next to `SKILL.md` (git-ignored), to change that.
+The optional Gemini check of reverse-search results (`compare.py`) reads `GEMINI_API_KEY`, or the env file named by
+`"gemini_env_file"` in the same `config.local.json`; without a key, results are ranked locally only.
 
 ## What's inside
 
 | Area | Tools |
 |---|---|
 | Archive and scoring | `photo_session.py` (start / finish / truth / scoreboard / list), `bench.py` |
-| One-command local first pass | `recon.py` → `meta.py`, `intake.py`, `ocr.py`, `textgeo.py`, `detect.py`, `calib.py`, `prior.py` |
+| One-command local first pass | `recon.py` → `meta.py`, `intake.py`, `ocr.py`, `textgeo.py`, `detect.py`, `calib.py`, `prior.py`, `compare.py` |
+| Reverse-search results → leads | `compare.py` (every similar image from every list and crop, merged, ranked against the photo with MegaLoc, the top ones checked by Gemini one image at a time; also ranks a venue's photos), `triage.py` (a lead's page: every picture and caption, ranked, with OCR), `imgprep.py mask` (people painted out before a search) |
 | Text → place | `textgeo.py` (scripts, telltale letters, language, phone numbers incl. unreadable digits, domains, postal codes, currency, regional words, ~50k brands, GeoNames places), `geodata.py`, `clues.py` (incl. 2,100 regional plate codes across ten countries, with the years each was in use) |
 | Reasoning ledger | `board.py` — candidates, clues, likelihood ratios capped by evidence type, exclusion rules, rank / next / check / report |
 | Street level | `pano.py` (every provider plus your own manifests: coverage, list, render, sheet), `sweep.py` (rank every panorama of whole towns with MegaLoc), `gsv.py`, `refsheet.py` (real Street View rows per candidate country, region or town), `match.py`, `baidu_pano.py` |
 | Clue → short list | `opendata.py` (city open-data portals: bus lanes, street trees, hydrants… filtered to candidate points), `osm.py addr` (house numbers, alone or co-occurring) |
 | Maps and geometry | `osm.py`, `poi.py`, `gazetteer.py`, `tiles.py` (incl. NASA daily satellite passes), `sat_scan.py`, `terrain.py`, `sun.py` (incl. past weather by day), `geo.py`, `pose.py`, `evidence.py` (incl. colour-coded match sheets) |
-| Local models | StreetCLIP + GeoCLIP world prior (`prior.py`), OWLv2 object crops (`detect.py`), GeoCalib camera calibration (`calib.py`), MegaLoc place recognition (`sweep.py`, `match.py`), DINOv2/CLIP matching |
+| Local models | StreetCLIP + GeoCLIP world prior (`prior.py`), OWLv2 object crops (`detect.py`), GeoCalib camera calibration (`calib.py`), MegaLoc place recognition (`sweep.py`, `match.py`, `compare.py`, `triage.py`), DINOv2/CLIP matching; optionally Gemini Flash to check search results |
 
 Several of these tools come from geo-sleuth; [Credits](#credits) lists which ones and what GeoInt added to them.
 
@@ -56,10 +60,10 @@ Oldcircle's copyright notice.
 
 | | From geo-sleuth | New in GeoInt |
 |---|---|---|
-| Tools (34) | 9, plus the base of 12 more | **13 new**, plus new features in those 12 |
+| Tools (36) | 8, plus the base of 13 more | **15 new**, plus new features in those 13 |
 | Method (`SKILL.md`) | 3% | **97%** |
-| Instructions (`SKILL.md` + `references/`) | 20% | **80%** |
-| Python code | 53% | **47%** (about 7,100 lines) |
+| Instructions (`SKILL.md` + `references/`) | 19% | **81%** |
+| Python code | 49% | **51%** (about 8,300 lines) |
 | Data tables | 7 | **4**, incl. 2,100 regional plate codes and 250 countries and territories |
 
 Percentages count non-blank lines that match geo-sleuth at commit `4ff6c2f`.
@@ -67,24 +71,25 @@ Percentages count non-blank lines that match geo-sleuth at commit `4ff6c2f`.
 **From geo-sleuth:** the base toolkit for maps and geometry, sun and terrain analysis, OCR, reverse image search,
 image matching, the reasoning board and evidence images, plus the China-specific data and street-level imagery.
 
-- `geo.py`, `exif.py`, `intake.py`, `pose.py`, `revimg.py`, `gazetteer.py`, `sat_scan.py`,
+- `geo.py`, `exif.py`, `pose.py`, `revimg.py`, `gazetteer.py`, `sat_scan.py`,
   `baidu_pano.py`, `poi.py` (apart from its user-agent string) and the helpers `_net.py` and `_browser.py`; the guides
   `aerial.md` and `world/china.md`; the data tables `calling_codes`, `cn_admin`, `cn_area_codes`, `cn_plates` and
   `territories`.
 - Lightly edited: the guides `geometry.md`, `corridors.md`, `observe.md` and `verify.md`; the data tables
   `country_names` and `driving_side`; `tests/test_runtime.py`.
 - Extended by GeoInt (its additions in brackets): `board.py` (`ingest`, `retract`), `clues.py` (2,100 regional plate
-  codes outside China, Street View coverage), `doctor.py` (`--models`), `evidence.py` (match sheets), `gsv.py`
-  (`area`), `imgprep.py` (`reveal`), `match.py` (MegaLoc), `ocr.py` (automatic language detection), `osm.py`
-  (`addr`), `sun.py` (`weather`), `terrain.py` (panoramic mode), `tiles.py` (Wayback history, NASA daily passes); the
-  guides `search.md`, `data-sources.md` and `sky.md`.
+  codes outside China, Street View coverage), `doctor.py` (`--models`, the Gemini check), `evidence.py` (match
+  sheets), `gsv.py` (`area`), `imgprep.py` (`reveal`, `mask`), `intake.py` (every list re-ranked by `compare.py`
+  after each search), `match.py` (MegaLoc), `ocr.py` (automatic language detection), `osm.py` (`addr`), `sun.py`
+  (`weather`), `terrain.py` (panoramic mode), `tiles.py` (Wayback history, NASA daily passes); the guides `search.md`,
+  `data-sources.md` and `sky.md`.
 
 **New in GeoInt:**
 
-- 13 tools: the per-photo archive and scoring (`photo_session.py`, `bench.py`), the one-command first pass
+- 15 tools: the per-photo archive and scoring (`photo_session.py`, `bench.py`), the one-command first pass
   (`recon.py`, `meta.py`, `textgeo.py`, `detect.py`, `calib.py`, `prior.py`), street-level search across providers
-  and whole towns (`pano.py`, `sweep.py`, `refsheet.py`), and place lists and city open data (`geodata.py`,
-  `opendata.py`).
+  and whole towns (`pano.py`, `sweep.py`, `refsheet.py`), place lists and city open data (`geodata.py`,
+  `opendata.py`), and reverse-search results turned into checked leads (`compare.py`, `triage.py`).
 - The method: `SKILL.md` (rewritten; 97% of its lines are new) and the `workflow`, `country-funnel`, `streetlevel`,
   `datasets`, `models` and `benchmark` guides.
 - The worldwide clue library in `references/world/`: Africa and the Middle East, the Americas, Asia, Europe, Oceania,

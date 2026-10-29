@@ -396,5 +396,157 @@ class NewToolTests(unittest.TestCase):
         self.assertIn("clear", rows[0])
 
 
+class CompareTriageTests(unittest.TestCase):
+    """Offline checks for compare.py, triage.py, the Gemini helper and imgprep mask (no model, no network)."""
+
+    def _session(self, td: Path) -> Path:
+        (td / "original").mkdir()
+        Image.new("RGB", (64, 48), "gray").save(td / "original" / "p.jpg")
+        (td / "session.json").write_text(json.dumps({"original": {"relative_path": "original/p.jpg"}}))
+        return td
+
+    def test_compare_merges_every_list(self):
+        import compare
+        self.assertEqual(compare.page_key("http://www.example.com/post/1/"), compare.page_key("https://m.example.com/post/1"))
+        self.assertEqual(compare.image_key("http://mms0.baidu.com/it/u=12,34&fm=253&f=JPEG?w=313"), "12,34")
+        with tempfile.TemporaryDirectory() as td:
+            root = self._session(Path(td))
+            (root / "crops").mkdir()
+            Image.new("RGB", (32, 32), "white").save(root / "crops" / "steps.jpg")
+            t = "http://mms0.baidu.com/it/u={}&fm=253"
+            lists = {"recon/intake/rev/p_baidu.json": (str(root / "original" / "p.jpg"),
+                                                       [("http://www.a.com/x", t.format("1,1")), ("http://b.org/y", t.format("2,2"))]),
+                     "recon/intake/rev/full_flip_baidu.json": ("recon/intake/variants/full_flip.jpg", [("https://m.a.com/x/", t.format("1,1"))]),
+                     "rev_crop/rev/steps_baidu.json": ("crops/steps.jpg", [("http://www.a.com/x", t.format("3,3"))]),
+                     ".geo-cache/old_baidu.json": ("x.jpg", [("http://c.net/z", t.format("9,9"))]),
+                     "compare/stale_baidu.json": ("x.jpg", [("http://c.net/z", t.format("8,8"))])}
+            for rel, (img, sim) in lists.items():
+                (root / rel).parent.mkdir(parents=True, exist_ok=True)
+                (root / rel).write_text(json.dumps({"engine": "baidu", "image": img,
+                                                    "similar": [{"from": f, "thumb": th, "site": ""} for f, th in sim]}))
+            cands, read, n, bases = compare.harvest(root, [root / "compare"])
+            self.assertEqual(len(read), 3)                      # the cache folder and the output folder are skipped
+            self.assertEqual(n, 4)
+            by_img = {compare.image_key(c["thumb"]): c for c in cands}
+            self.assertEqual(sorted(by_img), ["1,1", "2,2", "3,3"])    # one candidate per distinct image on a page
+            self.assertEqual(len(by_img["1,1"]["hits"]), 2)           # the same image from two lists (www./m. merged)
+            self.assertEqual(sorted(b.name for b in bases), ["p.jpg", "steps.jpg"])   # variants rank as their base image
+            self.assertEqual(compare.find_original(root).name, "p.jpg")
+            self.assertEqual(compare.session_root(root / "rev_crop" / "rev"), root.resolve())
+
+    def test_compare_scores_and_fuses(self):
+        import compare
+        C = np.array([[[1, 0, 0], [0, 1, 0]], [[0, 0, 1], [0, 0, 1]], [[0.6, 0.8, 0], [0, 0, 1]]], dtype=np.float32)
+        Q = np.array([[[1, 0, 0]], [[0, 1, 0]]], dtype=np.float32)
+        S = compare.score(C, Q)
+        np.testing.assert_allclose(S, [[1, 1], [0, 0], [0.6, 0.8]], atol=1e-6)    # best view per query
+        np.testing.assert_allclose(compare.fuse(S[:, :1]), [1, 0, 0.6], atol=1e-6)  # one query: the cosine itself
+        S2 = np.array([[0.30, 0.20], [0.10, 0.45], [0.29, 0.21], [0.05, 0.05]])
+        self.assertEqual(int(np.argmax(compare.fuse(S2))), 0)       # consistent across queries beats one lucky query
+        self.assertEqual(int(np.argmax(S2.max(1))), 1)
+
+    def test_compare_check_one_image_each_and_cached(self):
+        import compare
+        import _gemini
+        with tempfile.TemporaryDirectory() as td:
+            root = self._session(Path(td))
+            out = root / "compare"
+            (out / "thumbs").mkdir(parents=True)
+            cands = []
+            for i in range(3):
+                Image.new("RGB", (40, 30), (i * 60, 90, 90)).save(out / "thumbs" / f"{i}.jpg")
+                cands.append({"key": f"k{i}", "file": f"compare/thumbs/{i}.jpg", "cid": f"{i + 1:04d}", "rank": i + 1})
+            calls = []
+
+            def fake_ask(parts, model=None, proxy=None, **kw):
+                calls.append(parts)
+                return '```json\n{"matches":[{"id":"0002","verdict":"same","confidence":97,"features":"gable slit"}]}\n```', \
+                    {"tokens": 1000}
+
+            real = (_gemini.ask, _gemini.api_key)
+            _gemini.ask, _gemini.api_key = fake_ask, (lambda: "test-key")
+            try:
+                info = compare.check(cands, [root / "original" / "p.jpg"], root, out, 24, "m", None)
+                again = compare.check([dict(c, gemini=None) for c in cands], [root / "original" / "p.jpg"], root, out, 24, "m", None)
+            finally:
+                _gemini.ask, _gemini.api_key = real
+            self.assertEqual(len(calls), 1)                                 # the second run is served from the cache
+            texts = [p.get("text", "") for p in calls[0]]
+            self.assertEqual(sum(1 for p in calls[0] if "inline_data" in p), 4)    # the query + one image per candidate
+            self.assertIn("CANDIDATE id=0002:", texts)
+            self.assertEqual([c["gemini"]["verdict"] for c in cands], ["different", "same", "different"])
+            self.assertEqual(info["checked"], 3)
+            self.assertEqual(again["new"], 0)
+            self.assertNotIn("test-key", (out / "verdicts.json").read_text())
+
+    def test_gemini_key_comes_from_the_named_env_file(self):
+        import _gemini
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            (td / "g.env").write_text("# keys\nexport GEMINI_API_KEY='abc123'\n")
+            (td / "config.local.json").write_text(json.dumps({"gemini_env_file": str(td / "g.env")}))
+            env = {k: v for k, v in __import__("os").environ.items() if k not in _gemini.KEY_NAMES}
+            with mock.patch.object(_gemini, "SKILL_DIR", td), mock.patch.dict("os.environ", env, clear=True):
+                self.assertEqual(_gemini.api_key(), "abc123")
+                self.assertEqual(_gemini.key_source(), "config.local.json")
+                with mock.patch.dict("os.environ", {"GEMINI_API_KEY": "fromenv"}):
+                    self.assertEqual(_gemini.api_key(), "fromenv")
+                    self.assertEqual(_gemini.key_source(), "environment")
+            with mock.patch.object(_gemini, "SKILL_DIR", td / "nowhere"), mock.patch.dict("os.environ", env, clear=True):
+                self.assertIsNone(_gemini.api_key())
+        self.assertEqual(_gemini.parse_json('Sure: {"matches": []} done'), {"matches": []})
+        self.assertEqual(_gemini.parse_json("no json"), {})
+
+    def test_triage_reads_albums_and_plain_pages(self):
+        import triage
+        album = ('<script>window.ARTICLE_DETAIL = {"article": {"title": "Trip 5", "create_time": 1498435200, "content": '
+                 '{"content": [{"img_url": "https://x.cn/a.heic", "text": "<p>dinner street</p>"}, {"text": "<b>our hotel near the town</b>"}, '
+                 '{"img_url": "https://x.cn/b.heic", "text": ""}]}}};</script>')
+        p = triage.parse(album, "https://www.meipian.cn/abc")
+        self.assertEqual((p["reader"], p["title"], p["date"]), ("meipian", "Trip 5", "2017-06-26"))
+        self.assertEqual([x["url"] for x in p["pictures"]], ["https://x.cn/a.heic", "https://x.cn/b.heic"])
+        self.assertEqual(p["pictures"][0]["after"], "dinner street")
+        self.assertEqual(p["pictures"][1]["before"], "our hotel near the town")
+        page = ('<html><head><title>A walk</title><meta property="og:image" content="/cover.jpg"></head><body>'
+                '<p>Intro text here</p><img data-src="/p1.jpg" src="data:image/gif;base64,R0" alt="the steps"><p>caption one</p>'
+                '<img srcset="/s.jpg 300w, /l.jpg 1200w"><img src="/static/logo.png"><script>var s = "<img src=/x.jpg>";</script>'
+                '<p>closing words</p></body></html>')
+        p = triage.parse(page, "https://site.com/post/9")
+        urls = [x["url"] for x in p["pictures"]]
+        self.assertEqual(urls, ["https://site.com/p1.jpg", "https://site.com/l.jpg", "https://site.com/cover.jpg"])
+        first = p["pictures"][0]
+        self.assertEqual((first["alt"], first["before"], first["after"]), ("the steps", "Intro text here", "caption one"))
+        self.assertTrue(p["pictures"][-1].get("og"))
+        self.assertEqual(p["title"], "A walk")
+        gbk = '<meta charset="gbk"><p>酒店</p>'.encode("gbk")
+        self.assertIn("酒店", triage.decode(gbk))
+        self.assertEqual(triage.slug("http://www.meipian.cn/ab12cd3"), "meipian.cn_ab12cd3")
+
+    def test_mask_paints_a_box_with_its_surroundings(self):
+        import imgprep
+        im = Image.new("RGB", (200, 160), (20, 60, 200))
+        im.paste((230, 20, 20), (80, 40, 140, 150))
+        out = imgprep.mask(im, [(80, 40, 140, 150)])
+        r, g, b = out.getpixel((110, 95))
+        self.assertGreater(b, 150)
+        self.assertLess(r, 80)
+        self.assertEqual(out.getpixel((5, 5)), (20, 60, 200))                 # far from the box: untouched
+
+    def test_recon_page_lists_gemini_matches(self):
+        import recon
+        with tempfile.TemporaryDirectory() as td:
+            root = self._session(Path(td))
+            (root / "compare").mkdir()
+            (root / "compare" / "compare.json").write_text(json.dumps({"n_lists": 3, "gemini": {"checked": 24}, "candidates": [
+                {"rank": 1, "page": "http://www.meipian.cn/abc", "gemini": {"verdict": "same", "confidence": 98, "features": "gable"}},
+                {"rank": 2, "page": "http://x.org/y", "gemini": {"verdict": "different"}}]}))
+            md = recon.summary(root / "original" / "p.jpg", root / "recon", {}, 1.0, True)
+        self.assertIn("Every similar image, ranked", md)
+        self.assertIn("#1 Gemini same 98%", md)
+        self.assertIn('triage.py "http://www.meipian.cn/abc"', md)
+        self.assertNotIn("x.org", md)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

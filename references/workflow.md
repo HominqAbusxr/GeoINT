@@ -24,11 +24,14 @@ python3 <skill>/scripts/photo_session.py start --image "/absolute/path/to/photo.
 ## Autonomy
 
 - Work end to end without asking the user anything. Reverse image search (uploading the photo and crops to
-  Yandex, Baidu, Google Lens, Bing, TinEye), web search, maps, OpenStreetMap, GeoNames and Street View lookups
+  Yandex, Baidu, Google Lens, Bing, TinEye), the Gemini check of `compare.py` (the photo and candidate
+  thumbnails, when a key is configured), web search, maps, OpenStreetMap, GeoNames and Street View lookups
   are all pre-approved for every photo analysed with this skill.
 - Ambiguity is resolved by judgment, not by questions: choose the most reasonable reading, record the
   assumption in `report.md`, continue. A blocked service (CAPTCHA, rate limit) is skipped and noted.
-- Keep secrets (API keys, tokens) out of saved files, command lines and shell history.
+- Keep secrets (API keys, tokens) out of saved files, command lines and shell history. `compare.py` and
+  `triage.py` read the Gemini key themselves (`GEMINI_API_KEY`, or the env file named by `gemini_env_file` in
+  `config.local.json`); never paste it into a command or the session folder.
 
 ## report.md
 

@@ -10,6 +10,7 @@
   variants  variants for reverse image search: tight crop / horizontal flip / enhanced grayscale / color-cast removal / upscale; optional perspective rectification
   grid      cut into N×M tiles, for "search only a part" in reverse image search
   reveal    brighten and stretch a dark or flat crop several ways (levels, equalize, shadow-lift gammas, CLAHE) to read text or a plate hidden in shadow
+  mask      paint people (or cars, captions) out with the colour around them, so a reverse image search matches the place, not the outfit
   piers     take a brightness profile along a few rows below the bridge deck and find the pixel columns of the bridge piers (for back-solving the camera position)
 
 Coordinates are always original-image pixels x0,y0,x1,y1 (top-left, bottom-right). Check the original image size first with `exif.py` or PIL.
@@ -21,6 +22,7 @@ Examples:
   imgprep.py variants photo.jpg --persp 312,140,880,95,905,770,290,720 --out-dir v/   # rectify four corners (top-left top-right bottom-right bottom-left)
   imgprep.py grid photo.jpg --rows 2 --cols 3 --out-dir tiles/
   imgprep.py reveal photo.jpg --box 820,540,1080,660 --out-dir reveal/        # read a plate/sign lost in shadow
+  imgprep.py mask photo.jpg --box 310,420,720,1990 --out masked.jpg           # the person out; then intake.py masked.jpg --out-dir rev_masked
   imgprep.py piers photo.jpg --rows 926:940 --out cols.json --sheet piers.jpg
 
 piers output JSON:
@@ -60,6 +62,30 @@ def gray_world(im: Image.Image) -> Image.Image:
     chans = [ch.point(lambda v, k=avg / max(m, 1): max(0, min(255, int(v * k))))
              for ch, m in zip(im.convert("RGB").split(), (r, g, b))]
     return ImageOps.autocontrast(Image.merge("RGB", chans), cutoff=1)
+
+
+def mask(im: Image.Image, boxes: list[tuple[int, int, int, int]], feather: int = 9) -> Image.Image:
+    """Fill each box with the median colour of a band around it and soften the seam. Engines then match the scene:
+    with a person filling the frame, they return outfits and poses instead of places."""
+    import numpy as np
+
+    out = im.convert("RGB").copy()
+    W, H = out.size
+    for x0, y0, x1, y1 in boxes:
+        x0, y0, x1, y1 = max(0, x0), max(0, y0), min(W, x1), min(H, y1)
+        if x1 <= x0 or y1 <= y0:
+            continue
+        m = max(6, int(0.06 * max(x1 - x0, y1 - y0)))
+        bands = [np.asarray(out.crop(b)).reshape(-1, 3) for b in ((max(0, x0 - m), y0, x0, y1), (x1, y0, min(W, x1 + m), y1),
+                 (x0, max(0, y0 - m), x1, y0), (x0, y1, x1, min(H, y1 + m))) if b[2] > b[0] and b[3] > b[1]]
+        fill = tuple(int(v) for v in np.median(np.concatenate(bands), axis=0)) if bands else (128, 128, 128)
+        out.paste(fill, (x0, y0, x1, y1))
+    soft = out.filter(ImageFilter.GaussianBlur(feather))
+    for x0, y0, x1, y1 in boxes:
+        b = (max(0, x0 - feather), max(0, y0 - feather), min(W, x1 + feather), min(H, y1 + feather))
+        if b[2] > b[0] and b[3] > b[1]:
+            out.paste(soft.crop(b), b[:2])
+    return out
 
 
 def perspective(im: Image.Image, quad: list[float]) -> Image.Image:
@@ -272,6 +298,11 @@ def main() -> None:
     rv.add_argument("--out-dir", type=Path, required=True)
     rv.add_argument("--sheet", type=Path, help="combined labelled sheet; default <out-dir>/<stem>_reveal.jpg")
 
+    mk = sub.add_parser("mask", help="paint people, cars or captions out before a reverse image search")
+    mk.add_argument("image", type=Path)
+    mk.add_argument("--box", type=_box, action="append", required=True, help="x0,y0,x1,y1 to paint out, repeatable")
+    mk.add_argument("--out", type=Path, required=True)
+
     pr = sub.add_parser("piers", help="find bridge pier pixel columns from the brightness profile of a few rows below the bridge deck",
                         formatter_class=argparse.RawDescriptionHelpFormatter, description="""\
 Take the brightness profile along the --rows rows, subtract the sliding median baseline, and find peaks with prominence ≥ --min-prominence; the pixel columns of the peaks are the pier columns.
@@ -309,6 +340,12 @@ drop non-pier peaks (bright foreground spots, railings, trees); structure segmen
 
     if args.cmd == "zoom":
         zoom(im, args.box, args.scale).save(args.out)
+        print(args.out)
+        return
+
+    if args.cmd == "mask":
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        mask(im, args.box).save(args.out, quality=95)
         print(args.out)
         return
 

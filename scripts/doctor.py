@@ -27,6 +27,7 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import _gemini
 from _browser import launch_browser
 from _net import PROXY_HELP, curl_args, resolve_proxy
 
@@ -55,7 +56,7 @@ MODEL_CACHES = {
     "StreetCLIP (prior.py)": "models--geolocal--StreetCLIP",
     "CLIP ViT-L/14 (prior.py GeoCLIP backbone)": "models--openai--clip-vit-large-patch14",
     "OWLv2 (detect.py)": "models--google--owlv2-base-patch16-ensemble",
-    "MegaLoc (sweep.py, match.py)": "models--gberton--MegaLoc",
+    "MegaLoc (sweep.py, match.py, compare.py, triage.py)": "models--gberton--MegaLoc",
 }
 
 
@@ -151,9 +152,19 @@ def diagnose(network: bool, proxy: str | None) -> dict:
     gc = (Path.home() / ".cache" / "torch" / "hub" / "geocalib" / "pinhole.tar").exists()
     rows.append(check("GeoCalib (calib.py)", "PASS" if gc else "INFO", "Weights cached." if gc else "Downloads on first use (~100 MB)."))
     rows.append(check("Other ML models", "INFO", "match.py (DINOv2/CLIP) and sat_scan.py (CLIP) download weights on first use."))
+    key_src = _gemini.key_source()
+    rows.append(check("Gemini key (compare.py, triage.py)", "PASS" if key_src else "INFO",
+                      f"Found ({key_src}); the top search results are checked one image at a time." if key_src
+                      else "Not set: compare.py ranks search results with MegaLoc only.",
+                      "" if key_src else 'Set GEMINI_API_KEY, or put "gemini_env_file": "<env file holding GEMINI_API_KEY=…>" '
+                                         "in config.local.json."))
     if network and shutil.which("curl"):
         with ThreadPoolExecutor(max_workers=8) as pool:
             rows.extend(pool.map(lambda item: probe(item, proxy), SERVICES.items()))
+        if key_src:
+            ok, detail = _gemini.probe(proxy=proxy)
+            rows.append(check("Gemini model", "PASS" if ok else "WARN", detail + " (metadata only, no tokens spent)",
+                              "" if ok else "Check the key, and the model name in GEOINT_GEMINI_MODEL."))
     else:
         rows.append(check("Network probes", "SKIP", "Run with --network to check service reachability."))
     return {"ok": not any(row["status"] == "FAIL" for row in rows), "connection": route, "checks": rows}

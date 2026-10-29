@@ -10,9 +10,15 @@ uv run scripts/imgprep.py variants photo.jpg --box 300,120,900,760 --out-dir v/
 uv run scripts/imgprep.py variants photo.jpg --persp 312,140,880,95,905,770,290,720 --box ... --out-dir v/
 # Baidu image search + Yandex; each image gets a result screenshot and JSON
 uv run scripts/revimg.py photo.jpg v/*.jpg --out-dir rev/
+# A person fills the frame: paint them out first, search the masked copy (intake.py = variants + both engines)
+uv run scripts/imgprep.py mask photo.jpg --box 310,420,720,1990 --out masked.jpg
+uv run scripts/intake.py masked.jpg --out-dir rev_masked
+# Every similar image from every list saved so far, merged, ranked with MegaLoc, top 24 checked by Gemini
+uv run scripts/compare.py                      # intake.py and recon.py already run it; compare/compare.md
+uv run scripts/triage.py "<page of a lead>"    # every picture and caption on that page, ranked, OCR of the best
 ```
 
-**Always open the result screenshots and look**: extracted text is only an aid; the scenes in similar images and the titles of source posts matter more. Baidu's similar images are also saved as a numbered contact sheet `<name>_baidu_similar.jpg` (the top-left cell is the query image; number i corresponds to the source page of JSON `similar[i]`). Look at it first: for near-duplicate photos of the same object or scene, the source page (Dianping, Douyin, Xiaohongshu) often gives the shop name or location tag directly.
+**Always open the result screenshots and look**: extracted text is only an aid; the scenes in similar images and the titles of source posts matter more. Baidu's similar images are also saved as a numbered contact sheet `<name>_baidu_similar.jpg` (the top-left cell is the query image; number i corresponds to the source page of JSON `similar[i]`). Look at it first: for near-duplicate photos of the same object or scene, the source page (Dianping, Douyin, Xiaohongshu) often gives the shop name or location tag directly. The sheet shows only the first 24 of about 90 results per list; `compare.md` covers all of them, from every list.
 
 **How to use place-name labels**: Baidu image search's "图中可能是…" ("the image may show…"), Yandex labels and the Lens AI overview are all candidates; count votes separately by level:
 - City level: count which city each crop and each engine named. The same city named by two different crops is more credible than "two contradictory specific places"; specific places that don't agree don't cancel the city they jointly point to.
@@ -30,6 +36,7 @@ uv run scripts/tiles.py sheet --points pois.json --zoom 18 --out pois_sheet.jpg
 
 | Situation | What to do | Source |
 |---|---|---|
+| A person or an outfit fills the frame | Paint them out (`imgprep.py mask`) and search the masked copy; otherwise every engine, Lens included, returns clothes and poses | field test |
 | The whole image finds nothing | Box only the most distinctive object (statue, building, ornament); remove the sky and background buildings | v010-5, v010-6 |
 | Stock photos may have been taken from the other side | Flip horizontally and search again | v010-5 (hit only after flipping) |
 | Rephotographed material, oblique shots | Perspective-rectify, remove glare | v004 |
@@ -60,6 +67,11 @@ Engines rank visual matches by how alike they look, not by whether they show the
 same standard design, the same paint scheme, the same chain's fit-out, the same builder's catalogue) crowd the top;
 the actual place often sits further down, and a lookalike can absorb an hour of checking.
 
+0. `compare.py` reads every Baidu list in the session at once (all crops, flips and masked copies; it re-runs
+   after each `intake.py`): one row per distinct image, ranked against the photo with MegaLoc, the top 24 checked
+   by Gemini one image at a time. Open Gemini's matches first, then the table. Measured on 25 archived photos:
+   matches flagged in 3, all right, no false alarm in 600 checks; in one, the answer was the 8th result of a crop's
+   flipped list, on a sheet nobody opened, and ranked 1st of 517 once merged. A flag is a lead, not a confirmation.
 1. Save the full list from every engine and crop (page text and a screenshot in `rev/`), then write every place
    it names into a candidate table: venue, business, street, town, and the company that built, supplied or
    designed the object when a result names one.
@@ -70,7 +82,11 @@ the actual place often sits further down, and a lookalike can absorb an hour of 
      banner or sign. A fragment on a wall or a uniform is often the place's own brand.
 3. Check each named place against two or three fixed features (structure, layout, roof line, skyline, terrain)
    and drop it with a written reason before going deep on any one.
-4. Stalled for about 15 minutes on one lead? Return to the saved lists and the table before searching wider.
+4. Stalled for about 15 minutes on one lead? Return to the saved lists and the table before searching wider;
+   `compare.py --query <tight crop>` re-ranks every list against the most distinctive part.
+5. Never decide on a contact sheet or a thumbnail: open the full-size image. Asked about a 24-tile sheet, a vision
+   model called three wrong buildings "same" at 99% and missed the right one; asked one image at a time, it
+   picked only the right one.
 
 ### Chinese keyword search
 
@@ -86,7 +102,8 @@ Bing China gives web results (title + link); Baidu Images and Sogou Images give 
 
 ### After a hit
 
-- **Look at the rest of the set**: the hit post is often a set of images, and the others may show plates, road signs or shop names (v009: the plate was in the 5th image of the set). First use shared fixed objects (streetlights, walls, chimneys) to confirm that the photos in the set and the puzzle image are the same place.
+- **Look at the rest of the set**: the hit post is often a set of images, and the others may show plates, road signs or shop names (v009: the plate was in the 5th image of the set). First use shared fixed objects (streetlights, walls, chimneys) to confirm that the photos in the set and the puzzle image are the same place. `triage.py "<page>"` does the reading: every picture with the text before and after it, ranked against the photo, OCR of the best ones (in a test it read a building's street number and full name off the neighbouring picture of an album), Meipian albums included; pages that render with scripts or sit behind a login need the browser (save the page and pass the file with `--base-url`).
+- **A travel diary names where the writer slept or ate, not always the place in each picture**: a caption such as "our hotel near <town>, an old country manor" is a description to search ("<town> country house hotel"), then confirm the building on fixed features and an official address.
 - **The candidate's background doesn't match**: it may be a replica, an identical installation, or another branch of the same chain. Once you have the proper name, search another round for "<proper name> 复制品 / replica / 同款" (复制品 = replica, 同款 = same model); the official introduction where the original stands often says where the replicas are (v004).
 - **The hit is only a "similar scene"**: use it as a clue (city, scenic-area name), not as a conclusion; go back to SKILL.md Steps 6–7 to verify.
 - **For news images, first judge whether it's a real photo**: many news sites illustrate articles with stock images, illustrations or even generated images; before comparing facades, check whether it is this place.
@@ -97,6 +114,7 @@ Bing China gives web results (title + link); Baidu Images and Sogou Images give 
 |---|---|---|
 | Scenic-area buildings, viral check-in spots | Douyin, Xiaohongshu, Weibo keyword and image search; official scenic-area accounts post videos from the same angle | v010-2, v009 |
 | Statues, small park features, foreign attractions | User photos on travel review sites (Tripadvisor, Ctrip reviews); Google Lens | v010-6 |
+| A candidate venue (hotel, restaurant, gym, shop) | Many photos per venue in one folder (official gallery, Google Maps photos, Instagram/Facebook via ScrapeCreators or the browser, travel blogs), ranked with `compare.py --images <folder> --no-lists`; side wings, back terraces and interiors rarely appear on the official site. Among 428–622 photos of candidate venues gathered by hand, MegaLoc ranked the right venue's official shots 12th–17th and the same chain's other branch below 75th; Gemini flagged the right venue's photos, but in one of two runs also three photos of a lookalike venue (85–95%): with near-identical venues a flag needs the fixed-feature check even more | field tests |
 | New residential developments, commercial complexes | Housing-development albums on property sites (Anjuke, Fang.com, Loupan.com, etc.): the "周边配套" (nearby amenities) and "实景图" (real photos) sections; page all the way to the signboard | v010-5 |
 | Old buildings, historic sites | Local culture-and-tourism and protected-heritage-site pages; stock image sites (Visual China Group, Getty, Alamy), whose captions carry place names and years | v004 |
 | Ordinary streets and residential areas | Image search adds little; prioritize geometry and infrastructure; when even the city isn't fixed, sample one page of arterial-road street view per candidate city and compare municipal fixtures (`baidu_pano.py sample`) | — |
@@ -136,6 +154,9 @@ Suits objects that "you can't name, but have a rare shape" (the v004 fountain).
 
 - Using only one engine and searching only the whole image; after a failure, not changing the image or the engine.
 - Opening the first visual match and spending the session on it, while a lower result named the same place twice or matched a letter or logo in the photo.
+- Reading only the first contact sheet of each list, or only the whole photo's lists, instead of `compare.md`.
+- Checking a candidate venue on its first three photos (usually the main house) and dropping it.
+- Asking a vision model "where is this?": in one test Gemini Pro answered 210 km off and Flash another continent, where the local prior was 35 km off. Use it to compare images, not to geolocate.
 - Turning the "object category" from an AI or image recognition directly into a location ("boat-shaped sculpture → tourist city"); this jump counts only as weak evidence (v005).
 - Getting carried off by the "most famous similar place" the search turns up and forgetting to come back and check bearings and details (the main way the AI failed in v010).
 - Two engines each point at a different city, and you draw a big circle around the midpoint of the two and call it done: instead run a discriminating test and pick one as the main answer (SKILL.md rule 7).

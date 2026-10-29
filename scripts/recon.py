@@ -13,11 +13,13 @@ Runs in parallel and writes everything under --out-dir (default recon/):
   detect/    numbered crops of signs, plates, poles, bollards, markings, vehicles…          (detect.py)
   calib.*    field of view, pitch/roll, horizon line                                       (calib.py)
   prior/     learned world prior (StreetCLIP + GeoCLIP), self-assessed                       (prior.py)
+  ../compare every reverse-search result merged, ranked with MegaLoc, the top ones checked by
+             Gemini one image at a time; written to <session>/compare/                   (compare.py)
   recon.md   one page summarising all of it — read this, then open the crops it lists
 
-  recon.py original/photo.jpg                      # full pass (first run downloads models, later runs ~1 min)
+  recon.py original/photo.jpg                      # full pass (first run downloads models, later runs ~1–2 min)
   recon.py original/photo.jpg --no-ml              # metadata, crops, OCR, text and reverse search, no local models
-  recon.py original/photo.jpg --no-rev             # everything except the reverse image search
+  recon.py original/photo.jpg --no-rev             # everything except the reverse image search (and so compare)
   recon.py original/photo.jpg --skip detect,calib  # skip some steps
 
 The tools do not replace your own read of the image: make your gut call first (SKILL.md, step 1), then use
@@ -63,6 +65,15 @@ def jload(p: Path) -> dict:
         return json.loads(p.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
         return {}
+
+
+def compare_dir(out: Path) -> Path:
+    """Where compare.py writes: <session>/compare when out is inside a photo session, else out/compare."""
+    p = out.resolve()
+    for q in [p, *p.parents][:5]:
+        if (q / "session.json").is_file():
+            return q / "compare"
+    return p / "compare"
 
 
 def summary(photo: Path, out: Path, log: dict, total: float, rev: bool) -> str:
@@ -150,6 +161,25 @@ def summary(photo: Path, out: Path, log: dict, total: float, rev: bool) -> str:
                  "neither is a location until verified.")
     else:
         L.append(f"- intake did not finish: {log.get('intake', {}).get('error', '')[:200]}")
+    # every similar image, merged and ranked
+    cj = jload(compare_dir(out) / "compare.json")
+    if rev and cj.get("candidates"):
+        cands, g = cj["candidates"], cj.get("gemini") or {}
+        flagged = [c for c in cands if (c.get("gemini") or {}).get("verdict") in ("same", "possible")]
+        cmd_ = Path(os.path.relpath(compare_dir(out), Path.cwd()))
+        L += ["", "## Every similar image, ranked (compare.py)", "",
+              f"- {len(cands)} candidates from {cj.get('n_lists')} lists ranked with MegaLoc; "
+              + (f"Gemini checked the top {g.get('checked', 0)} one image at a time." if g.get("checked") else
+                 "no Gemini check (" + "; ".join(g.get("errors") or ["skipped"]) + ").")]
+        for c in flagged[:5]:
+            v = c["gemini"]
+            L.append(f"- **#{c['rank']} Gemini {v['verdict']} {v.get('confidence', '?')}%**: {c.get('page') or c.get('file')} — "
+                     f"{v.get('features', '')[:160]} → `triage.py \"{c.get('page')}\"`, then verify on the full-size image")
+        if g.get("checked") and not flagged:
+            L.append(f"- Gemini found no candidate showing the same place in the top {g['checked']} (not proof of absence).")
+        L.append(f"- Read `{cmd_ / 'compare.md'}` and its sheet `{cmd_ / 'sheet.jpg'}`; it is rebuilt after every later intake.py run.")
+    elif rev and log.get("compare", {}).get("rc"):
+        L += ["", f"- compare.py failed: {log['compare'].get('error', '')[:200]}"]
     # prior
     pr = jload(out / "prior" / "prior.json")
     L += ["", "## World prior (learned models: ranking only)", ""]
@@ -202,8 +232,9 @@ def summary(photo: Path, out: Path, log: dict, total: float, rev: bool) -> str:
           "2. `board.py init --photo original/<file>`; record your own observations as clues; `board.py ingest recon/textgeo.json` "
           "and `board.py ingest recon/prior/prior.json` after checking the signals make sense.",
           "3. Separate the top candidates with the cheapest decisive test (text lookups, web search, `refsheet.py`, the world clue files).",
-          "4. Follow every reverse-search lead (source pages, albums, captions); try Google Lens through the browser tool and "
-          "re-run the scripted engines on a tight crop of the most distinctive object. No questions to the user — decide and continue."]
+          "4. Follow every reverse-search lead, Gemini's matches in compare.md first (`triage.py <page>`: the album, captions, "
+          "signs); try Google Lens through the browser tool and re-run the scripted engines on a tight crop of the most distinctive "
+          "object (or a copy with the people painted out). No questions to the user — decide and continue."]
     return "\n".join(L) + "\n"
 
 
@@ -212,13 +243,13 @@ def main() -> None:
     ap.add_argument("photo", type=Path)
     ap.add_argument("--out-dir", type=Path, default=Path("recon"))
     ap.add_argument("--no-ml", action="store_true", help="skip detect, calib and prior")
-    ap.add_argument("--skip", default="", help="comma list of steps to skip: meta,intake,textgeo,detect,calib,prior")
+    ap.add_argument("--skip", default="", help="comma list of steps to skip: meta,intake,textgeo,compare,detect,calib,prior")
     ap.add_argument("--no-rev", action="store_true", help="skip the Yandex/Baidu reverse image search")
     args = ap.parse_args()
     photo = args.photo.resolve()
     out = args.out_dir
     out.mkdir(parents=True, exist_ok=True)
-    skip = {s.strip() for s in args.skip.split(",") if s.strip()} | ({"detect", "calib", "prior"} if args.no_ml else set())
+    skip = {s.strip() for s in args.skip.split(",") if s.strip()} | ({"detect", "calib", "prior", "compare"} if args.no_ml else set())
     log: dict = {}
     t0 = time.time()
     S = lambda n: str(HERE / n)  # noqa: E731
@@ -227,11 +258,13 @@ def main() -> None:
         if "meta" not in skip:
             run("meta", [UV, "run", "-q", S("meta.py"), str(photo), "--out-dir", str(out / "meta")], log)
         if "intake" not in skip:
-            run("intake", [UV, "run", "-q", S("intake.py"), str(photo), "--out-dir", str(out / "intake")]
+            run("intake", [UV, "run", "-q", S("intake.py"), str(photo), "--out-dir", str(out / "intake"), "--no-compare"]
                 + (["--no-rev"] if args.no_rev else []), log)
         if "textgeo" not in skip and (out / "intake" / "ocr.json").exists():
             run("textgeo", [UV, "run", "-q", S("textgeo.py"), "--ocr", str(out / "intake" / "ocr.json"),
                             "--out", str(out / "textgeo.json"), "--md", str(out / "textgeo.md")], log)
+        if "compare" not in skip and not args.no_rev and list((out / "intake" / "rev").glob("*_baidu.json")):
+            run("compare", [UV, "run", "-q", S("compare.py"), "--root", str(out), "--out-dir", str(compare_dir(out))], log)
 
     def heavy():
         if "detect" not in skip:

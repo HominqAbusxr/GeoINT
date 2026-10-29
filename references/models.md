@@ -1,7 +1,9 @@
 # Local models: what they are good for, how to read them, when to ignore them
 
-All models run locally (Apple MPS, CUDA or CPU); nothing about the photo leaves the machine. Weights download
-once (`doctor.py --models`, ~6.2 GB). Licences allow this personal use; StreetCLIP is non-commercial.
+All models run locally (Apple MPS, CUDA or CPU); nothing about the photo leaves the machine, except through the
+optional Gemini check of `compare.py` and `triage.py --check`, which sends the photo and candidate thumbnails to
+Google's API when a key is set. Weights download once (`doctor.py --models`, ~6.2 GB). Licences allow this personal
+use; StreetCLIP is non-commercial.
 
 | Tool | Model | Output | Typical time (M-series Mac, cached) |
 |---|---|---|---|
@@ -9,6 +11,7 @@ once (`doctor.py --models`, ~6.2 GB). Licences allow this personal use; StreetCL
 | `detect.py` | OWLv2 (google/owlv2-base-patch16-ensemble, Apache-2.0), open vocabulary | numbered crops of signs, plates, poles, bollards, markings, vehicles… | ~8 s |
 | `calib.py` | GeoCalib (ETH CVG, ECCV 2024, Apache-2.0) | FOV, focal (px and 35 mm eq.), pitch, roll, horizon line, uncertainties | ~5 s |
 | `sweep.py`, `match.py` | MegaLoc (gberton/MegaLoc, MIT; DINOv2-B + optimal-transport aggregation, 8448-d, 1.7 GB) | visual place recognition: ranks street-level views of the same place across days, years and cameras | ~50 views/s |
+| `compare.py`, `triage.py` | MegaLoc (local) + Gemini Flash (remote, optional; `gemini-3.8-flash` by default) | every reverse-search result or venue photo ranked against the photo; same-place verdicts on the top 24 | ~1 min for 200–600 candidates, ~30k tokens per 24 checked |
 | `match.py` | DINOv2-small / CLIP ViT-B/32 + SIFT | generic similarity (satellite thumbnails, object references) | per batch |
 | `sat_scan.py` | CLIP ViT-B/32 | ranks satellite cells by a text query/preset | per scan |
 | `ocr.py` | Apple Vision (auto language) / RapidOCR | text lines with boxes and confidence | ~5 s |
@@ -49,6 +52,26 @@ Validated on Street View renders with known settings: pitch +12° / FOV 70° →
 80° true) but reported a large uncertainty (vfov ±13°, focal ±600 px) — `recon.md` marks such results
 UNRELIABLE. Always look at the red horizon in `calib.jpg` before feeding numbers to `pose.py`, `terrain.py` or
 `geo.py`. If EXIF has a trustworthy 35 mm focal length, pass `--prior-focal-35mm` to fix it.
+
+## Comparing search results (`compare.py`, `triage.py`)
+
+MegaLoc, trained to recognise one place across days, years and cameras, also ranks reverse-search thumbnails and
+venue photos against the photo. Merged from all the lists of one case (517 distinct images), it put the answer
+first, where DINOv2 put it 51st, CLIP 69th and SIFT inliers 40th. Its scores sit close together (1st 0.254, 2nd
+0.249 there): the rank orders your reading, it does not decide.
+
+Gemini then sees the photo and the top 24, one image per candidate, and answers "same physical place?":
+- Flash on all 517 candidates of that case: only the answer (98%), no false alarm. On the top 24 of the 24 other
+  archived photos: matches in 2 (three images, all right), nothing on the other 22.
+- Pro on the same 517 missed the answer and called a railing maker's product photo "same" at 95%: Flash is the
+  default for a reason.
+- Venue photos are harder: among 428 photos of near-identical venues, Flash flagged the right venue's two official
+  shots and also three photos of a lookalike (85–95%). In another run on a similar pool it flagged only the right
+  venue. Its confidence number does not separate the two cases; fixed features do.
+- Shown a 24-tile contact sheet instead of separate images, Pro called three wrong buildings "same" at 99% and
+  Flash found nothing. Never ask a model, or yourself, to judge a sheet.
+- As a geolocator ("where is this?", the photo alone) Gemini did far worse than the local prior: Pro 210 km off,
+  Flash on another continent, Flash with web search on a third, where GeoCLIP's cluster was 35 km off.
 
 ## OCR coverage
 

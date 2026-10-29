@@ -10,9 +10,11 @@ Outputs (all in --out-dir):
 intake.md is for humans (and the LLM): metadata, OCR text, Baidu similar images (count, source sites, numbered contact sheet rev/<name>_baidu_similar.jpg),
 tiered vote count of image-search tags, suspected residential compound / housing development / hotel names, list of outputs, items skipped and failed.
 Always open the image-search screenshots and the similar-image contact sheets; "searched, nothing found" and "not searched" are written separately in the report.
+After the reverse search it runs compare.py on every list saved in the photo's session so far (this run's and earlier ones):
+all results merged, ranked with MegaLoc, the top ones checked by Gemini one image at a time → <session>/compare/compare.md.
 
   intake.py photo.jpg --out-dir intake/ [--box x0,y0,x1,y1 ...] [--engines baidu,yandex] [--exclude word1,word2]
-            [--no-rev] [--no-ocr] [--max-variants 4]
+            [--no-rev] [--no-ocr] [--no-compare] [--max-variants 4]
 
 Examples:
   intake.py photo.jpg --out-dir intake/
@@ -131,6 +133,7 @@ def main() -> None:
     ap.add_argument("--exclude", help="words to exclude from reverse image search results (for blind tests)")
     ap.add_argument("--no-rev", action="store_true")
     ap.add_argument("--no-ocr", action="store_true")
+    ap.add_argument("--no-compare", action="store_true", help="don't merge and rank the session's reverse-search lists afterwards (compare.py)")
     ap.add_argument("--max-variants", type=int, default=4, help="max number of variants each engine searches (besides the original)")
     ap.add_argument("--proxy", default=os.environ.get("GEO_PROXY"), help=PROXY_HELP)
     args = ap.parse_args()
@@ -211,6 +214,15 @@ def main() -> None:
                 f.result()
         entries, votes = _collect_rev(rev_dir)
 
+    # Batch 3: merge every reverse-search list of the session (earlier runs included), rank, Gemini check
+    compare_out = ""
+    if not args.no_rev and not args.no_compare and any(e["similar_n"] for e in entries):
+        cmd = [UV, "run", _script("compare.py"), "--root", str(out)]
+        if args.proxy:
+            cmd += ["--proxy", args.proxy]
+        res = timed("compare", lambda: _run(cmd, timeout=1200))
+        compare_out = res[1].strip()
+
     ocr_items = []
     if (out / "ocr.json").exists():
         try:
@@ -244,6 +256,13 @@ def main() -> None:
     if args.no_rev:
         L.append("Not done (--no-rev). This is not \"searched, nothing found\".")
     else:
+        if compare_out:
+            L.append("**Every list in the session, merged and ranked (compare.py) — read its page first:**")
+            L += [f"    {ln}" for ln in compare_out.splitlines()[-8:]]
+            L.append("")
+        elif status.get("compare"):
+            L.append(f"compare.py: {status['compare']}")
+            L.append("")
         for eng in args.engines.split(","):
             st = status.get(f"rev-{eng}", "not run")
             L.append(f"- {eng}: {st}")
@@ -305,8 +324,10 @@ def main() -> None:
         L.append(f"- {k}: {v}")
     (out / "intake.md").write_text("\n".join(x for x in L if x is not None), encoding="utf-8")
     (out / "intake.json").write_text(json.dumps({"photo": str(photo), "exif": exif_json, "ocr": ocr_items, "rev": entries, "votes": votes,
-                                                 "status": status, "timings": timings}, ensure_ascii=False, indent=1), encoding="utf-8")
+                                                 "status": status, "timings": timings, "compare": compare_out}, ensure_ascii=False, indent=1), encoding="utf-8")
     print("\n".join(L[:6]))
+    if compare_out:
+        print(compare_out)
     print(f"-> {out / 'intake.md'} (read this)")
 
 
