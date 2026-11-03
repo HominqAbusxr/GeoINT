@@ -1,6 +1,6 @@
 # GeoInt
 
-An agent skill for finding where any photo, screenshot, video frame or Street View image was taken — the
+An agent skill for finding where any photo, screenshot, video, recording or Street View image was taken — the
 instincts of a strong GeoGuessr player plus the discipline of an OSINT investigation. The agent leads with its own
 expert read of the scene (a written gut call), then proves, sharpens or overturns it with web research and local
 tools, down to street or camera level when the evidence allows. Every photo gets its own timestamped archive with
@@ -8,9 +8,9 @@ a report, evidence images and a scoreboard once the true location is known.
 
 > GeoInt builds on [geo-sleuth](https://github.com/Oldcircle/geo-sleuth) by [Oldcircle](https://github.com/Oldcircle)
 > (MIT). From geo-sleuth: 8 tools, the base of 13 more that GeoInt extended, and part of the documentation and data.
-> New in GeoInt: 15 tools, a rewritten method (97% new), a worldwide clue library, street-level search across 11
+> New in GeoInt: 16 tools, a rewritten method (97% new), a worldwide clue library, street-level search across 11
 > providers, reverse-search results merged, ranked and checked image by image, and a per-photo archive with scoring.
-> In all, 81% of the instructions and 51% of the Python code are GeoInt's own; [Credits](#credits) shows which part
+> In all, 81% of the instructions and 56% of the Python code are GeoInt's own; [Credits](#credits) shows which part
 > is which.
 
 `SKILL.md` is the method; `references/` holds the playbooks and the worldwide clue library; `scripts/` holds the
@@ -44,6 +44,7 @@ The optional Gemini check of reverse-search results (`compare.py`) reads `GEMINI
 | Street level | `pano.py` (every provider plus your own manifests: coverage, list, render, sheet), `sweep.py` (rank every panorama of whole towns with MegaLoc), `gsv.py`, `refsheet.py` (real Street View rows per candidate country, region or town), `match.py`, `baidu_pano.py` |
 | Clue → short list | `opendata.py` (city open-data portals: bus lanes, street trees, hydrants… filtered to candidate points), `osm.py addr` (house numbers, alone or co-occurring) |
 | Maps and geometry | `osm.py`, `poi.py`, `gazetteer.py`, `tiles.py` (incl. NASA daily satellite passes), `sat_scan.py`, `terrain.py`, `sun.py` (incl. past weather by day), `geo.py`, `pose.py`, `evidence.py` (incl. colour-coded match sheets) |
+| Sound → place and time | `audio.py`: inaudible aircraft passes made visible, each fitted for speed and closest-approach distance, then searched against that day's open ADS-B tracks and scored on the modelled Doppler curves (often 100–300 m from two passes, plus the recording's start time); thunder against lightning records (GOES GLM built in); mains hum (50/60 Hz, ENF) |
 | Local models | StreetCLIP + GeoCLIP world prior (`prior.py`), OWLv2 object crops (`detect.py`), GeoCalib camera calibration (`calib.py`), MegaLoc place recognition (`sweep.py`, `match.py`, `compare.py`, `triage.py`), DINOv2/CLIP matching; optionally Gemini Flash to check search results |
 
 Several of these tools come from geo-sleuth; [Credits](#credits) lists which ones and what GeoInt added to them.
@@ -60,10 +61,10 @@ Oldcircle's copyright notice.
 
 | | From geo-sleuth | New in GeoInt |
 |---|---|---|
-| Tools (36) | 8, plus the base of 13 more | **15 new**, plus new features in those 13 |
+| Tools (37) | 8, plus the base of 13 more | **16 new**, plus new features in those 13 |
 | Method (`SKILL.md`) | 3% | **97%** |
 | Instructions (`SKILL.md` + `references/`) | 19% | **81%** |
-| Python code | 49% | **51%** (about 8,300 lines) |
+| Python code | 44% | **56%** (about 10,200 lines) |
 | Data tables | 7 | **4**, incl. 2,100 regional plate codes and 250 countries and territories |
 
 Percentages count non-blank lines that match geo-sleuth at commit `4ff6c2f`.
@@ -86,26 +87,28 @@ image matching, the reasoning board and evidence images, plus the China-specific
 
 **New in GeoInt:**
 
-- 15 tools: the per-photo archive and scoring (`photo_session.py`, `bench.py`), the one-command first pass
+- 16 tools: the per-photo archive and scoring (`photo_session.py`, `bench.py`), the one-command first pass
   (`recon.py`, `meta.py`, `textgeo.py`, `detect.py`, `calib.py`, `prior.py`), street-level search across providers
   and whole towns (`pano.py`, `sweep.py`, `refsheet.py`), place lists and city open data (`geodata.py`,
-  `opendata.py`), and reverse-search results turned into checked leads (`compare.py`, `triage.py`).
+  `opendata.py`), reverse-search results turned into checked leads (`compare.py`, `triage.py`), and a recording's
+  sound as location evidence (`audio.py`).
 - The method: `SKILL.md` (rewritten; 97% of its lines are new) and the `workflow`, `country-funnel`, `streetlevel`,
-  `datasets`, `models` and `benchmark` guides.
+  `datasets`, `models`, `audio` and `benchmark` guides.
 - The worldwide clue library in `references/world/`: Africa and the Middle East, the Americas, Asia, Europe, Oceania,
   general clues and Street View coverage.
-- The data tables `countries`, `plate_codes`, `streetview_coverage` and `text_signals`, and the tests `test_tools.py`
-  and `test_photo_session.py`.
+- The data tables `countries`, `plate_codes`, `streetview_coverage` and `text_signals`, and the tests `test_tools.py`,
+  `test_audio.py` and `test_photo_session.py`.
 
 ## Tests
 
 ```bash
-uv run tests/test_tools.py && uv run tests/test_runtime.py && python3 -m unittest tests/test_photo_session.py
+uv run tests/test_tools.py && uv run tests/test_runtime.py && uv run tests/test_audio.py && python3 -m unittest tests/test_photo_session.py
 ```
 
 ## Licences and data
 
 Code: MIT (see `LICENSE`, which keeps Oldcircle's copyright notice for the parts that come from geo-sleuth). Data: GeoNames (CC BY 4.0), Wikipedia-derived
-tables (CC BY-SA 4.0), OpenStreetMap name-suggestion-index (downloaded at runtime); details in `data/README.md`
+tables (CC BY-SA 4.0), OpenStreetMap name-suggestion-index (downloaded at runtime); flight tracks from the adsb.lol
+archive (ODbL) and lightning from NOAA GOES (public domain), both fetched at runtime; details in `data/README.md`
 and `references/data-sources.md`. Model weights are downloaded from their publishers under their own licences
 (StreetCLIP is non-commercial); see `references/models.md`.

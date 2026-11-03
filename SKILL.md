@@ -1,6 +1,6 @@
 ---
 name: geoint
-description: World-class photo geolocation. Use it whenever someone wants to know where a photo, screenshot, video frame or Street View/GeoGuessr image was taken — "where is this?", "geolocate this", "find the location", "which country is this", "guess the place", "where was this picture taken", GeoGuessr rounds, OSINT location checks, chronolocation ("when was this taken") — even if they just paste an image and ask "where?". Also 这是哪 / 在哪拍的 / 图寻 / 网络迷踪, "c'est où ?", "où a été prise cette photo", "¿dónde es esto?", "وين هادي". Combines the model's own expert eye and web research with local tools: deep metadata, OCR and text-to-country lookups, learned world-prior models, object crops, camera calibration, Street View reference sheets and matching, OpenStreetMap queries, terrain and sun geometry, satellite scanning, a candidate board with evidence rules, and a per-photo archive with scoring.
+description: World-class photo geolocation. Use it whenever someone wants to know where a photo, screenshot, video frame or Street View/GeoGuessr image was taken — "where is this?", "geolocate this", "find the location", "which country is this", "guess the place", "where was this picture taken", GeoGuessr rounds, OSINT location checks, chronolocation ("when was this taken"), videos placed by their sound — even if they just paste an image and ask "where?". Also 这是哪 / 在哪拍的 / 图寻 / 网络迷踪, "c'est où ?", "où a été prise cette photo", "¿dónde es esto?", "وين هادي". Combines the model's own expert eye and web research with local tools: deep metadata, OCR and text-to-country lookups, learned world-prior models, object crops, camera calibration, Street View reference sheets and matching, OpenStreetMap queries, terrain and sun geometry, satellite scanning, sound (aircraft Doppler vs ADS-B tracks, thunder, mains hum), a candidate board with evidence rules, and a per-photo archive with scoring.
 ---
 
 # GeoInt — find where any photo was taken
@@ -169,7 +169,9 @@ What the pieces are worth (details in `references/models.md`):
 
 Skip what is obviously pointless (`--no-ml` for a photo of a readable street sign; `--skip calib` for a
 close-up). For video: extract keyframes first (`ffmpeg -i clip.mp4 -vf "select='gt(scene,0.3)'" -vsync vfr
-frames/%03d.jpg`) and run recon on the most informative frames.
+frames/%03d.jpg`) and run recon on the most informative frames, and look at the soundtrack too
+(`audio.py look` / `events`): a passing aircraft, thunder or the mains hum can place a recording whose frames
+cannot (Special situations › Video or audio).
 
 ## Step 3 — Read everything and search the web (your biggest lever)
 
@@ -309,6 +311,7 @@ Pick the branch that fits what you have (details in the references):
 | Motorway / expressway scene | corridor from `osm.py along --line '["highway"="motorway"]' --bbox …` (or the `ref`), then `gsv.py sheet --points … --along --offset 180` for the other carriageway; match barriers, reflectors, dash pattern | `corridors.md` |
 | Mainland China | Baidu panoramas (`baidu_pano.py`), GCJ-02 coordinates (`geo.py convert`) | `world/china.md`, `data-sources.md` |
 | Plane window or drone | aerial branch | `aerial.md` |
+| A video or recording with sound: an aircraft passing, thunder, mains hum | `audio.py look/events` → `fit` each pass → `adsb` → `locate`; `lightning` → `thunder`; `hum` | `audio.md` |
 
 Town known (or a short list of towns), street unknown: sweep it. List every panorama of each town from every
 source that covers it (`pano.py list --provider google|apple|yandex|… --near <town> --radius <m> --out t.jsonl`,
@@ -389,6 +392,15 @@ location becomes known, record it: `photo_session.py truth <folder> --latitude �
   black-and-white photo goes into the sweep as it is: colourising measured no better than grayscale (read the
   top 50 and the clusters), and a colourised copy's colours are guesses, never evidence.
 - **Indoor, close-up, product shots**: text, plugs and sockets, packaging, provenance; reverse search; metadata.
+- **Video or audio**: the soundtrack is a second photo (`references/audio.md`). Look at it as a spectrogram before
+  listening (`audio.py look`, `events`): most aircraft passes are inaudible but plain there. Two propeller or
+  helicopter passes a known time apart, plus the silence between them, single out one spot among every flight of
+  the day: fit each curve (speed and closest-approach distance), pull that day's ADS-B tracks for the area
+  (`audio.py adsb`, open archive), and `audio.py locate` (often 100–300 m, and the recording's start time). One pass
+  with a known clock gives the flight and a short segment. Thunder against lightning records gives the town
+  (`lightning`, `thunder`); the hum gives the grid (50/60 Hz) and, with a grid-frequency record, the time (`hum`).
+  Check the area has low non-jet traffic in the tracks first; volunteer ADS-B coverage is thin in parts of the
+  world. Speech, calls to prayer, bells, sirens and birds are clues like text in a photo.
 - **Puzzles (图寻 / 网络迷踪 style)**: setters pick obscure places — keep priors uniform, distrust fame, and
   read `references/world/china.md` for China.
 - **No street-level coverage**: first make sure — `pano.py coverage`, a web search for local and historical
@@ -420,6 +432,7 @@ location becomes known, record it: `photo_session.py truth <folder> --latitude �
 | `osm.py`, `poi.py`, `gazetteer.py` | OpenStreetMap queries (incl. `addr` house numbers), corridors, place names, admin areas |
 | `tiles.py`, `sat_scan.py`, `evidence.py` | satellite/map mosaics (Google, hybrid with street names, Esri, Bing, Esri Wayback history since 2014, Sentinel-2 by year, NASA GIBS daily passes), town-fabric sheets, CLIP-ranked satellite scans, evidence images and colour-coded match sheets |
 | `terrain.py`, `sun.py`, `geo.py`, `pose.py` | skylines, sun/shadows, past weather by day, bearings/frames/conversions, camera pose |
+| `audio.py` | a recording's sound: whitened spectrograms, Doppler-pass detection and fitting, ADS-B tracks (adsb.lol), aircraft search scored on the modelled curves, GOES lightning and thunder search, mains hum and ENF |
 | `bench.py` | benchmarks: Street View test sets, scoring predictions and sessions |
 | `doctor.py` | setup check (`--network`, `--models`) |
 

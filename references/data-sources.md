@@ -39,6 +39,7 @@
 | `refsheet.py` | Street View sample rows per candidate country/region (side by side) |
 | `bench.py` | Street View test sets with hidden truth, model-only baseline, scoring of predictions and sessions |
 | `photo_session.py` | Per-photo archive: start, finish, truth (scoring), scoreboard, list |
+| `audio.py` | A recording's sound: `look` (whitened spectrogram sheets), `events` (Doppler passes, tones, hum, bursts), `fit` (speed, closest-approach distance, heard CPA time of one pass), `adsb` (a day's aircraft tracks from adsb.lol, or a CSV), `locate` (aircraft search + modelled-curve scoring), `lightning` (GOES GLM flashes), `thunder` (thunder search), `hum` (50/60 Hz grid, ENF trace, match to a grid-frequency record) — see `audio.md` |
 
 ## Coordinate systems (must be kept apart in China)
 
@@ -168,6 +169,7 @@ The endpoints are all at `https://mapsv0.bdimg.com/`, need no key, and must be a
 | libphonenumber (`phonenumbers`) | phone number → country, region/city for many landlines, carrier | Apache-2.0 |
 | lingua | offline language identification for short text | Apache-2.0 |
 | Hugging Face / GitHub model weights | StreetCLIP, CLIP ViT-L/14 (GeoCLIP), OWLv2, GeoCalib, DINOv2, CLIP B/32 | see `models.md` |
+| tar1090-db `icao_aircraft_types.js` (GitHub) | ICAO aircraft type → engine class (piston, turboprop, jet, helicopter) for `audio.py` | ICAO Doc 8643 designators |
 
 ## Time and weather
 
@@ -177,3 +179,8 @@ The endpoints are all at `https://mapsv0.bdimg.com/`, need no key, and must be a
 | Historical daily weather (temperature, sun/rain) | `sun.py weather` (Open-Meteo ERA5 archive, no key): check "frozen", "sunny"; with a date, rank or test places; with a place, rank the days |
 | Historical weather-satellite cloud imagery | `tiles.py --source gibs:<date>`: that day's MODIS/VIIRS pass; match a cloud bank, snow line or clear strip seen in the photo |
 | Flightradar24, FlightAware | Flight history by registration; the paid tier can download KML/CSV tracks |
+| adsb.lol historical archive (github.com/adsblol, ODbL) | Every aircraft its volunteer network received, one release per UTC day (positions every few seconds, ICAO type) | `audio.py adsb` streams and filters a day; coverage follows receiver density |
+| OpenSky Network, ADS-B Exchange | Historical ADS-B (OpenSky: research access to its database; ADS-B Exchange: paid API, free full-day samples on the 1st of each month) | export to CSV → `audio.py adsb --csv` |
+| NOAA GOES GLM (AWS open data, `noaa-goes16/17/18/19`) | Lightning flashes over the Americas, every 20 s since 2017, position error several km | `audio.py lightning` |
+| Meteosat MTG Lightning Imager (EUMETSAT), national lightning networks, Blitzortung | Lightning over Europe and Africa (free account), precise national data, community archive for contributors | CSV → `audio.py thunder --strikes` |
+| Grid-frequency records (transmission operators' open data) | Mains frequency second by second, to date a recording by its hum | CSV → `audio.py hum --reference` |
