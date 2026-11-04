@@ -9,6 +9,19 @@ a report, evidence images and a scoreboard once the true location is known.
 `SKILL.md` is the method; `references/` holds the playbooks and the worldwide clue library; `scripts/` holds the
 tools.
 
+## What's new
+
+- **Skyline → place** (November 2026). Give it a photo with hills or mountains on the skyline and the region they
+  are in: `terrain.py find` ranks every place of the region by how much of the skyline's shape the terrain there
+  explains, searches decoys of the skyline as a control, and says how far to trust the best place (solid, check
+  or weak) and why. `view --peaks` names the summits you see. On geotagged test photos from Yosemite, the Alps and
+  the High Atlas, the place it ranked first lay within a few hundred metres of the photo's geotag wherever that
+  geotag held up. Method: `references/skyline.md`.
+- **Sound → place** (November 2026). `audio.py` finds where a video was recorded from aircraft passes too faint to
+  hear, matched against that day's open flight tracks, and also reads thunder and the mains hum. Method:
+  `references/audio.md`.
+- **Better terrain**: elevation now comes from Mapterhorn (Copernicus GLO-30 plus national lidar where published).
+
 ## Install
 
 ```bash
