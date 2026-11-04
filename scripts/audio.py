@@ -790,7 +790,8 @@ def type_table(proxy=None) -> dict:
 
 def adsblol_assets(day: date, proxy=None, tag: str | None = None):
     repo = f"adsblol/globe_history_{day.year}"
-    tags = [tag] if tag else [f"v{day:%Y.%m.%d}-planes-readsb-prod-{n}" for n in range(3)]
+    tags = [tag] if tag else ([f"v{day:%Y.%m.%d}-planes-readsb-prod-{n}" for n in range(3)]
+                              + [f"v{day:%Y.%m.%d}-planes-readsb-staging-{n}" for n in range(2)])
     for tg in tags:
         try:
             rel = json.loads(fetch_bytes(f"https://api.github.com/repos/{repo}/releases/tags/{tg}", proxy, 30,
@@ -1209,6 +1210,15 @@ class Scorer:
         return float(tot[i]), [float(m[i]) for m in mats], float(self.shifts[i])
 
 
+def _dump_cells(a, grid, name, cells):
+    if not getattr(a, "dump_stages", False) or not len(cells):
+        return
+    la, lo = grid.center(np.unique(cells))
+    path = Path(a.out_dir) / f"stage_{name}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"stage": name, "points": [[round(float(x), 5), round(float(y), 5)] for x, y in zip(la, lo)]}))
+
+
 def cmd_locate(a):
     c = a.c or sound_speed(a.temp)
     fits = sorted((json.load(open(p)) for p in a.fit), key=lambda r: r["best"]["t_cpa"])
@@ -1253,6 +1263,7 @@ def cmd_locate(a):
         funnel.append(dict(stage=f"event {k + 1} ({ft['name']}): speed {sp[0]:.0f}-{sp[1]:.0f} m/s, slant {sl[0]:.0f}-{sl[1]:.0f} m",
                            cells=int(len(np.unique(ek["cell"]))), flights=int(len(set(fi)))))
         log("  " + funnel[-1]["stage"] + f": {funnel[-1]['cells']} cells from {funnel[-1]['flights']} flights")
+        _dump_cells(a, grid, f"event{k + 1}", ek["cell"])
     # time offsets between events (locked to the audio)
     ta = [ft["best"]["t_cpa"] for ft in fits]
     half = [max(0.0, (ft["search"]["t_cpa"][1] - ft["search"]["t_cpa"][0]) / 2 - 2) for ft in fits]
@@ -1287,6 +1298,7 @@ def cmd_locate(a):
     funnel.append(dict(stage=("absolute time ±%gs and " % a.clock_tol if T0_known is not None else "") +
                        f"time offsets between events ±{a.offset_tol:g}s", candidates=n, cells=int(len(np.unique(combo["cell"])))))
     log(f"  after time offsets: {n} candidates in {funnel[-1]['cells']} cells")
+    _dump_cells(a, grid, "offsets", combo["cell"])
     # silence: no other aircraft heard close by between the events
     if n and a.silence != "off":
         A = a.audible or max(ft["best"]["d"] for ft in fits)
@@ -1322,6 +1334,7 @@ def cmd_locate(a):
         funnel.append(dict(stage=f"silence ({a.silence}): no {a.silence_types} aircraft within {A:.0f} m slant between events",
                            candidates=n, cells=int(len(np.unique(combo["cell"])))))
         log(f"  after silence: {n} candidates in {funnel[-1]['cells']} cells")
+        _dump_cells(a, grid, "silence", combo["cell"])
     outdir = Path(a.out_dir)
     outdir.mkdir(parents=True, exist_ok=True)
     if not n:
@@ -1831,6 +1844,7 @@ def main(argv=None):
     p.add_argument("--dem-zoom", type=int, default=11)
     p.add_argument("--flat", action="store_true", help="ignore terrain (ground at 0 m)")
     p.add_argument("--out-dir", default="locate")
+    p.add_argument("--dump-stages", action="store_true", help="write each funnel stage's cells (stage_*.json) for maps")
     p.add_argument("--proxy", help=PROXY_HELP)
     p.set_defaults(func=cmd_locate)
 
