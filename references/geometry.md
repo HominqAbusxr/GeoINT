@@ -128,6 +128,10 @@ A ridge or cliff edge is exactly tangent in the frame to the edge of a nearby fe
 
 ### 7.4 A skyline gives only one sight line
 
+To search a whole area for the skyline, or score one candidate place, use `terrain.py find` / `check`
+(`skyline.md`): they rank places by how much of the traced skyline's shape the terrain explains and say how far
+to trust the best one. What follows still holds for their answers.
+
 Moving the camera position a few hundred meters forward or back along the sight line barely changes the outline of a distant ridge. So "the mountain shape matches" only says the camera position is near some sight line; **it can't fix a point, much less give meter-level precision** (v010-1: the AI reported ±7 m from the mountain outline alone and landed in the wrong town).
 
 ```bash
@@ -141,7 +145,7 @@ When rendering, the FOV must match the photo: portrait phone main camera horizon
 - When spiky false ridges appear close by (elevation sampling artifacts), set `--near` to 150–300 m.
 - When the ridges around a city are gentle, the skyline only helps you fix heading and FOV; it can't separate camera positions within a few hundred meters.
 
-**When there are many candidate camera positions, score them in batch, then look at overlays of the top few** (single source; one real case). Two steps: first `terrain.py ridge` reads the photo's ridge into a sequence of pixel points, then `terrain.py fit` places grids of camera positions around the candidate points and searches heading × focal length × horizon row.
+**When there are many candidate camera positions along infrastructure, score them in batch, then look at overlays of the top few** (single source; one real case; for mountains in general, `find`/`check` in `skyline.md` replace this). Two steps: first `terrain.py ridge` reads the photo's ridge into a sequence of pixel points, then `terrain.py fit` places grids of camera positions around the candidate points and searches heading × focal length × horizon row.
 
 ```bash
 # 1) Read the photo ridge: per column, find the brightness drop from sky to mountain

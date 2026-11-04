@@ -1,6 +1,6 @@
 ---
 name: geoint
-description: World-class photo geolocation. Use it whenever someone wants to know where a photo, screenshot, video frame or Street View/GeoGuessr image was taken — "where is this?", "geolocate this", "find the location", "which country is this", "guess the place", "where was this picture taken", GeoGuessr rounds, OSINT location checks, chronolocation ("when was this taken"), videos placed by their sound — even if they just paste an image and ask "where?". Also 这是哪 / 在哪拍的 / 图寻 / 网络迷踪, "c'est où ?", "où a été prise cette photo", "¿dónde es esto?", "وين هادي". Combines the model's own expert eye and web research with local tools: deep metadata, OCR and text-to-country lookups, learned world-prior models, object crops, camera calibration, Street View reference sheets and matching, OpenStreetMap queries, terrain and sun geometry, satellite scanning, sound (aircraft Doppler vs ADS-B tracks, thunder, mains hum), a candidate board with evidence rules, and a per-photo archive with scoring.
+description: World-class photo geolocation. Use it whenever someone wants to know where a photo, screenshot, video frame or Street View/GeoGuessr image was taken — "where is this?", "geolocate this", "find the location", "which country is this", "guess the place", "where was this picture taken", GeoGuessr rounds, OSINT location checks, chronolocation ("when was this taken"), videos placed by their sound — even if they just paste an image and ask "where?". Also 这是哪 / 在哪拍的 / 图寻 / 网络迷踪, "c'est où ?", "où a été prise cette photo", "¿dónde es esto?", "وين هادي". Combines the model's own expert eye and web research with local tools: deep metadata, OCR and text-to-country lookups, learned world-prior models, object crops, camera calibration, Street View reference sheets and matching, OpenStreetMap queries, skyline search over an area against terrain, sun geometry, satellite scanning, sound (aircraft Doppler vs ADS-B tracks, thunder, mains hum), a candidate board with evidence rules, and a per-photo archive with scoring.
 ---
 
 # GeoInt — find where any photo was taken
@@ -294,7 +294,7 @@ Pick the branch that fits what you have (details in the references):
 | What you have | Approach | Read |
 |---|---|---|
 | A unique anchor (building, statue, tower) | sight lines, alignment, tangents, camera height; `geo.py`, `pose.py` | `geometry.md` |
-| Mountains / skyline | `terrain.py view/scan/fit` render-and-compare; one sight line, then a second constraint | `geometry.md`, `corridors.md` 4.3 |
+| Mountains / skyline | trace it (`terrain.py ridge`), then `terrain.py find` over the region: places ranked by how much of the skyline's shape each explains, with decoys and a trust level; `check` one place, `view --peaks --overlay` to name the summits; a far skyline gives a sight line, so add a second constraint | `skyline.md`, `geometry.md` 7.4, `corridors.md` 4.3 |
 | Shadows, sun in frame, time known | `sun.py locate/when/facing/compass` | `sky.md` |
 | A date (EXIF, a known day) or "which day?" | `sun.py weather` (past cloud/sun/rain/snow, rank days); `tiles.py --source gibs:<date>` (that day's satellite pass: clouds, snow, smoke) | `sky.md` §6 |
 | A distinctive public asset in a city with open data | `opendata.py search/columns/get --points` → `tiles.py sheet` / `gsv.py sheet` | `datasets.md` |
@@ -431,7 +431,7 @@ location becomes known, record it: `photo_session.py truth <folder> --latitude �
 | `gsv.py`, `baidu_pano.py`, `match.py` | Google and Baidu discovery and rendering, comparison sheets, similarity ranking (MegaLoc / DINOv2 / CLIP) |
 | `osm.py`, `poi.py`, `gazetteer.py` | OpenStreetMap queries (incl. `addr` house numbers), corridors, place names, admin areas |
 | `tiles.py`, `sat_scan.py`, `evidence.py` | satellite/map mosaics (Google, hybrid with street names, Esri, Bing, Esri Wayback history since 2014, Sentinel-2 by year, NASA GIBS daily passes), town-fabric sheets, CLIP-ranked satellite scans, evidence images and colour-coded match sheets |
-| `terrain.py`, `sun.py`, `geo.py`, `pose.py` | skylines, sun/shadows, past weather by day, bearings/frames/conversions, camera pose |
+| `terrain.py`, `sun.py`, `geo.py`, `pose.py` | skylines (`ridge` trace, `find` an area, `check` a place, `view --peaks`), sun/shadows, past weather by day, bearings/frames/conversions, camera pose |
 | `audio.py` | a recording's sound: whitened spectrograms, Doppler-pass detection and fitting, ADS-B tracks (adsb.lol), aircraft search scored on the modelled curves, GOES lightning and thunder search, mains hum and ENF |
 | `bench.py` | benchmarks: Street View test sets, scoring predictions and sessions |
 | `doctor.py` | setup check (`--network`, `--models`) |

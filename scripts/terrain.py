@@ -6,9 +6,14 @@
 """Use elevation data to "look" out from a candidate camera position: synthesize a layered terrain view and skyline to compare ridgelines with the photo.
 
 When there is no street view, only distant mountains (group photos in the mountains, views across a river, aerial shots, a ridgeline outside a window), this replaces Google Earth oblique 3D.
-Elevation comes from AWS Terrain Tiles (Terrarium encoding, ~30 m worldwide, no key).
+Elevation comes from Mapterhorn tiles (Copernicus GLO-30 worldwide, national lidar where published, no key), with AWS
+Terrain Tiles (Terrarium, ~30 m) as the fallback (--dem aws).
 
-  view     render from one camera position by heading and field of view: shading layered by distance + red skyline + bearing ticks; can be stacked above/below the photo
+  find     search an area for where the photo was taken from its skyline: every place ranked by how much of the traced skyline's
+           shape the terrain there explains, with decoys, a trust level, overlays and a score map (references/skyline.md)
+  check    the same for one place (and the ground round it): the headings that fit, decoys, an overlay
+  view     render from one camera position by heading and field of view: shading layered by distance + red skyline + bearing ticks; can be stacked above/below the photo;
+           --peaks labels the named summits in view
   profile  output the skyline elevation angle and distance at each bearing (JSON), for numeric comparison
   elev     look up the ground elevation at a point
   scan     along linear infrastructure (railway, road, power line), compute the 360° horizon point by point, keep the points that are "flat nearby + a mountain + the mountain right next to a stretch of flat horizon"
@@ -26,6 +31,9 @@ Examples:
   terrain.py view --at <candidate camera position> --height 20 --heading <heading> --hfov 65 --out v.png --photo photo.jpg
   terrain.py profile --at 35.4983,138.7688 --heading 194 --hfov 50 --out prof.json
   terrain.py scan --lines rail_bridges.geojson --bbox 35.1,138.3,36.0,139.2 --out hits.json   # get the lines with osm.py geom first
+  terrain.py ridge photo.jpg --step 8 --png ridge.png --out ridge.json                         # then look at ridge.png; --skip what is not land
+  terrain.py find --ridge ridge.json --bbox 45.93,7.68,46.06,7.86 --dist 3:60 --out find.json --sheet top.jpg --heat heat.png
+  terrain.py check --ridge ridge.json --at 45.98315,7.78342 --radius 500 --out check.json --overlay check.jpg
   terrain.py ridge photo.jpg --x0 760 --x1 1260 --step 20 --flat 0:280 --out ridge.json --png ridge.png
   terrain.py fit --hits hits.json --ridge ridge.json --out fit.json --sheet top.jpg            # coarse search: per cluster 2 km / 250 m / z11
   terrain.py fit --at 35.4983,138.7688 --ridge ridge.json --radius 800 --grid 100 --zoom 13 --az-step 0.25 \\
@@ -43,6 +51,8 @@ import os
 import re
 import subprocess
 import sys
+import threading
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -53,11 +63,101 @@ sys.path.insert(0, str(Path(__file__).parent))
 import geo  # noqa: E402
 
 TILE = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
+# Mapterhorn: terrarium-encoded 512-px WebP tiles built from Copernicus GLO-30 everywhere and national surveys where
+# they are finer (lidar over much of Europe, the US, Japan…), no key. The whole planet exists to its zoom 12 (≈ 19 m a
+# pixel); deeper tiles exist only where a survey was published. Below zoom 12 a missing tile is the sea. One of its
+# tiles at zoom z is exactly four of the AWS 256-px tiles at z + 1, so everything here keeps the 256-px grid and crops.
+# Measured: the Matterhorn's summit 4,468 m against 4,478 m surveyed (AWS: 4,284 m); Mont Blanc 4,806 m (AWS 4,780).
+MAPTERHORN = "https://tiles.mapterhorn.com/{z}/{x}/{y}.webp"
+MAPTERHORN_PLANET = 12
+DEM_SOURCE = (os.environ.get("GEOINT_DEM") or "mapterhorn").lower()
 R_EARTH = 6371008.8
 K_REFRACTION = 0.13
+_GUARD = threading.Lock()
+_LOCKS: dict[str, threading.Lock] = {}
+_DECODED: OrderedDict = OrderedDict()
+_WARNED: set[str] = set()
+
+
+def _lock(key: str) -> threading.Lock:
+    with _GUARD:
+        return _LOCKS.setdefault(key, threading.Lock())
+
+
+def _get(url: str, path: Path, proxy: str | None) -> str:
+    """Download once into the cache: "ok", "none" (404, remembered: no tile there) or "error"."""
+    # a tile of one height (the open sea, a lake's flat surface) is a valid WebP of some 50 bytes: any size counts
+    if path.exists() and path.stat().st_size > 0:
+        return "ok"
+    none = path.with_suffix(".none")
+    if none.exists():
+        return "none"
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.part")
+    cmd = ["curl", "-q", "-s", "-m", "60", "-o", str(tmp), "-w", "%{http_code}", url] + curl_args(proxy)
+    code = subprocess.run(cmd, capture_output=True, text=True, check=False).stdout.strip()
+    if code == "200" and tmp.exists() and tmp.stat().st_size > 0:
+        tmp.replace(path)
+        return "ok"
+    tmp.unlink(missing_ok=True)
+    if code == "404":
+        none.touch()
+        return "none"
+    return "error"
+
+
+def _terrarium(path: Path) -> np.ndarray:
+    k = str(path)
+    with _GUARD:
+        if k in _DECODED:
+            _DECODED.move_to_end(k)
+            return _DECODED[k]
+    a = np.asarray(Image.open(path).convert("RGB"), dtype=np.float32)
+    h = a[..., 0] * 256 + a[..., 1] + a[..., 2] / 256 - 32768
+    with _GUARD:
+        _DECODED[k] = h
+        while len(_DECODED) > 48:
+            _DECODED.popitem(last=False)
+    return h
+
+
+def _mapterhorn(z: int, x: int, y: int, cache: Path, proxy: str | None) -> np.ndarray | None:
+    """The 256-px tile (z, x, y) cut from Mapterhorn's 512-px tile above it; where no survey goes that deep, the
+    planet's tile enlarged. None when Mapterhorn cannot be reached."""
+    zm, xm, ym = z - 1, x >> 1, y >> 1
+    qx, qy, size = (x & 1) * 256, (y & 1) * 256, 256
+    while zm >= 0:
+        p = cache / f"mapterhorn_{zm}_{xm}_{ym}.webp"
+        with _lock(str(p)):
+            st = _get(MAPTERHORN.format(z=zm, x=xm, y=ym), p, proxy)
+        if st == "error":
+            return None
+        if st == "ok":
+            try:
+                h = _terrarium(p)
+            except Exception:  # noqa: BLE001
+                p.unlink(missing_ok=True)
+                return None
+            crop = h[qy:qy + size, qx:qx + size]
+            if size != 256:
+                crop = np.asarray(Image.fromarray(np.ascontiguousarray(crop, dtype=np.float32)).resize((256, 256), Image.BILINEAR))
+            return crop.astype(np.float32)
+        if zm <= MAPTERHORN_PLANET:                                   # no tile on the planet layer: the sea
+            return np.zeros((256, 256), np.float32)
+        qx, qy, size = (xm & 1) * 256 + qx // 2, (ym & 1) * 256 + qy // 2, size // 2
+        zm, xm, ym = zm - 1, xm >> 1, ym >> 1
+    return None
 
 
 def _fetch(z: int, x: int, y: int, cache: Path, proxy: str | None) -> np.ndarray:
+    cache.mkdir(parents=True, exist_ok=True)
+    if DEM_SOURCE != "aws":
+        h = _mapterhorn(z, x, y, cache, proxy)
+        if h is not None:
+            return h
+        with _GUARD:
+            if "mt" not in _WARNED:
+                _WARNED.add("mt")
+                print("note: Mapterhorn could not be reached for some tiles; AWS Terrain Tiles used there", file=sys.stderr)
     p = cache / f"terrarium_{z}_{x}_{y}.png"
     if not (p.exists() and p.stat().st_size > 100):
         cmd = ["curl", "-q", "-s", "-m", "60", "-o", str(p), TILE.format(z=z, x=x, y=y)]
@@ -167,6 +267,62 @@ def _font(size: int):
         except Exception:  # noqa: BLE001
             continue
     return ImageFont.load_default()
+
+
+def _peaks(dem: "DEM", at: tuple[float, float], eye_alt: float, heading: float, hfov: float, rng: float, near: float,
+           proxy: str | None) -> list[dict]:
+    """Named summits (OpenStreetMap natural=peak/volcano) inside the view, with their elevation angle and whether the
+    terrain in front hides them. At most one per thirtieth of the view, the one standing highest in it."""
+    import osm  # noqa: PLC0415 — only needed for labels
+    lat, lon = at
+    dl, dk = rng / 110540, rng / (111320 * math.cos(math.radians(lat)))
+    ql = (f'[out:json][timeout:90];node["natural"~"^(peak|volcano)$"]["name"]'
+          f'({lat - dl:.5f},{lon - dk:.5f},{lat + dl:.5f},{lon + dk:.5f});out;')
+    data = osm.run(ql, proxy, Path(".geo-cache/osm"))
+    found = []
+    for el in data.get("elements", []):
+        p = (el["lat"], el["lon"])
+        d = _haversine(at, p)
+        brg = geo.bearing(at, p)
+        off = (brg - heading + 180) % 360 - 180
+        if not 150 < d <= rng or abs(off) > hfov / 2:
+            continue
+        h = float(dem.sample(np.array([p[0]]), np.array([p[1]]))[0])
+        ang = math.degrees(math.atan2(h - d * d / (2 * R_EARTH) * (1 - K_REFRACTION) - eye_alt, d))
+        front, _ = cast(dem, at, eye_alt, np.array([brg]), d * 0.97, near=near, n=400)
+        ele = re.match(r"^\s*(-?\d+(?:\.\d+)?)", str(el.get("tags", {}).get("ele", "")))
+        found.append({"name": el["tags"]["name"], "ele": round(float(ele.group(1))) if ele else round(h),
+                      "off": off, "el": ang, "dist": d, "seen": bool(ang >= float(front.max()) - 0.05)})
+    best: dict[int, dict] = {}
+    for f in found:
+        b = int((f["off"] + hfov / 2) // (hfov / 30))
+        if b not in best or (f["seen"], f["el"]) > (best[b]["seen"], best[b]["el"]):
+            best[b] = f
+    return sorted(best.values(), key=lambda f: f["off"])
+
+
+def _label_peaks(d: ImageDraw.ImageDraw, peaks: list[dict], xy, size: int) -> None:
+    """Mark and name the summits the camera sees (the hidden ones are only listed in the text output)."""
+    f = _font(size)
+    placed: list[tuple[float, float, float, float]] = []
+    for p in peaks:
+        if not p["seen"]:
+            continue
+        x, y = xy(p)
+        d.polygon([(x, y - 2), (x - 6, y - 12), (x + 6, y - 12)], fill=(250, 60, 60))
+        txt = f"{p['name']} {p['ele']} m · {p['dist'] / 1000:.0f} km"
+        w = d.textlength(txt, font=f)
+        below = y - 16 - size < 0                                       # a summit at the top edge: its name goes under it
+        ty = y + size + 4 if below else y - 16
+        for _ in range(6):                                              # step away from names already written
+            box = (x - 4, ty - size, x - 4 + w, ty + 3)
+            if not any(box[0] < b[2] and b[0] < box[2] and box[1] < b[3] and b[1] < box[3] for b in placed):
+                break
+            ty += (size + 4) if below else -(size + 4)
+            if ty - size < 0:
+                below, ty = True, y + size + 4
+        placed.append((x - 4, ty - size, x - 4 + w, ty + 3))
+        d.text((x - 4, ty), txt, fill=(255, 255, 255), font=f, anchor="ls", stroke_width=2, stroke_fill=(0, 0, 0))
 
 
 def annotate(im: Image.Image, azimuths: np.ndarray, pitch: float, vfov: float, title: str) -> Image.Image:
@@ -448,7 +604,16 @@ def _cmd_ridge(args) -> None:
     im = Image.open(args.photo).convert("RGB")
     W, H = im.size
     a = np.asarray(im, dtype=np.float32)
-    L = a[..., 0] * 0.299 + a[..., 1] * 0.587 + a[..., 2] * 0.114
+    blue = (a[..., 2] - 0.5 * (a[..., 0] + a[..., 1])) * 2 + 128
+    if args.by == "auto":
+        # a clear sky measured 65–90 at the top of the frame, a hazy or overcast one 10–35: under a blue sky, snow and sunlit
+        # rock are often brighter than the sky, so brightness alone stops below them
+        sky_blue = float(np.mean(blue[: max(4, H // 20)] - 128) / 2)
+        args.by = "blue" if sky_blue > 45 else "luma"
+        print(f"sky blueness {sky_blue:.0f} at the top of the frame: reading the skyline by {args.by} (--by to choose)")
+    L = blue if args.by == "blue" else a[..., 0] * 0.299 + a[..., 1] * 0.587 + a[..., 2] * 0.114
+    args.x0 = 0 if args.x0 is None else args.x0
+    args.x1 = W - 1 if args.x1 is None else args.x1
     if not (0 <= args.x0 < args.x1 < W):
         sys.exit(f"--x0/--x1 must satisfy 0 ≤ x0 < x1 < width {W}")
     if args.step <= 0:
@@ -461,8 +626,15 @@ def _cmd_ridge(args) -> None:
         x0, x1 = max(0, x - args.halfw), min(W, x + args.halfw + 1)
         return _sky_edge(L[:, x0:x1].mean(axis=1), ymin, ymax, args.k, args.drop, args.hold)
 
+    skip = []
+    for part in (args.skip or "").split(","):
+        if part.strip():
+            a_, b_ = (int(float(v)) for v in part.split(":"))
+            skip.append((min(a_, b_), max(a_, b_)))
     ridge, missing = [], []
     for x in range(args.x0, args.x1 + 1, args.step):
+        if any(a_ <= x <= b_ for a_, b_ in skip):
+            continue
         y = edge(x)
         (ridge.append([x, y]) if y is not None else missing.append(x))
     flat = None
@@ -495,7 +667,7 @@ def _cmd_ridge(args) -> None:
         "hrow": round(hrow, 1), "hrow_source": h_src,
         "f0": round(f0, 1), "f0_source": f_src, "f35_equiv": f35,
         "params": {"x0": args.x0, "x1": args.x1, "step": args.step, "ymin": ymin, "ymax": ymax,
-                   "drop": args.drop, "k": args.k, "hold": args.hold, "halfw": args.halfw},
+                   "drop": args.drop, "k": args.k, "hold": args.hold, "halfw": args.halfw, "by": args.by, "skip": args.skip},
     }
     Path(args.out).write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
     src_txt = {"arg": "--f0", "exif": "EXIF 35mm equivalent", "assumed": f"no EXIF, assumed {f35} mm equivalent"}[f_src]
@@ -846,9 +1018,12 @@ def _neg_coords(argv: list[str]) -> list[str]:
 
 
 def main() -> None:
+    global DEM_SOURCE
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--proxy", default=os.environ.get("GEO_PROXY"), help=PROXY_HELP)
     ap.add_argument("--cache", type=Path, default=Path(".geo-cache/dem"))
+    ap.add_argument("--dem", choices=["mapterhorn", "aws"], default=DEM_SOURCE if DEM_SOURCE in ("mapterhorn", "aws") else "mapterhorn",
+                    help="elevation source (default mapterhorn: Copernicus GLO-30 + national lidar; aws: AWS Terrain Tiles; env GEOINT_DEM)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     e = sub.add_parser("elev")
@@ -875,6 +1050,7 @@ def main() -> None:
     v.add_argument("--photo", type=Path, help="scale the photo to the same width and place it above the render for comparison")
     v.add_argument("--roll", type=float, default=0, help="frame roll angle (clockwise positive), for downward shots from tall buildings and handheld tilt")
     v.add_argument("--overlay", action="store_true", help="also output a separate image: draw the synthetic skyline (red line) directly on the photo with the same heading/pitch/field of view")
+    v.add_argument("--peaks", action="store_true", help="label the named summits the camera sees (OpenStreetMap); the ones the terrain in front hides are listed in the output")
 
     pr = sub.add_parser("profile")
     common(pr)
@@ -949,8 +1125,8 @@ Output JSON (--out):
    "params": {...parameters used in this run...}}
 --png also outputs a check image: yellow dots = ridge points, red vertical lines = columns not found, blue line = hrow, cyan line = flat-horizon column range. Look at the image before going to fit.""")
     rg.add_argument("photo", type=Path, help="photo")
-    rg.add_argument("--x0", type=int, required=True, help="ridge start column (inclusive)")
-    rg.add_argument("--x1", type=int, required=True, help="ridge end column (inclusive)")
+    rg.add_argument("--x0", type=int, help="ridge start column (inclusive; default 0)")
+    rg.add_argument("--x1", type=int, help="ridge end column (inclusive; default the last column)")
     rg.add_argument("--step", type=int, default=20, help="take one point every this many columns (default 20)")
     rg.add_argument("--flat", help="flat-horizon column range x0:x1 (e.g. 0:280); omit if there is none")
     rg.add_argument("--hrow", type=float, help="row of the horizon; if omitted, estimated from the --flat columns, and failing that, the frame midline")
@@ -959,6 +1135,12 @@ Output JSON (--out):
     rg.add_argument("--ymin", type=int, help="only search below this row (default 0; for clouds in the sky or foreground occlusion)")
     rg.add_argument("--ymax", type=int, help="only search above this row (default the frame bottom)")
     rg.add_argument("--drop", type=float, default=30, help="minimum amount the sky must be brighter than the mountain (0–255 brightness, default 30; in heavy haze lower to 15–20)")
+    rg.add_argument("--skip", help="column ranges to leave out, x0:x1[,x0:x1]: trees, poles, buildings or clouds across the skyline, or "
+                                   "stretches the check image shows on the wrong edge (a gap is better than a wrong line)")
+    rg.add_argument("--by", choices=["auto", "luma", "blue"], default="auto",
+                    help="what tells the sky from the land: luma = brightness; blue = how blue (sky) against how white or brown (snow, "
+                         "sunlit rock), for summits under a blue sky where snow is brighter than the sky; auto (default) = blue when the top "
+                         "of the frame is a clear blue sky, else luma")
     rg.add_argument("--k", type=int, default=4, help="rows taken above and below each when comparing brightness (default 4)")
     rg.add_argument("--hold", type=int, default=12, help="rows that must stay dark below the jump for it to count as mountain (default 12, used to skip wires and antennas)")
     rg.add_argument("--halfw", type=int, default=1, help="also average this many columns on each side of each column (default 1, i.e. 3 columns)")
@@ -1045,7 +1227,80 @@ Output JSON (--out):
     ft.add_argument("--sheet-cols", type=int, default=4, help="overlay images per row (default 4)")
     ft.add_argument("--sheet-width", type=int, default=360, help="width of each overlay image px (default 360)")
 
+    def search_opts(sp):
+        sp.add_argument("--ridge", "--trace", dest="ridge", type=Path, required=True,
+                        help='the photo\'s skyline: terrain.py ridge output, or {"image_size": [W, H], "ridge": [[x, y], …]} traced by hand')
+        sp.add_argument("--hfov", help="lens width, degrees: one value or a range a:b (default: EXIF ±8%%, else a 26 mm-equivalent lens ×/÷1.5)")
+        sp.add_argument("--f35", type=float, default=26.0, help="35 mm-equivalent focal length assumed when the trace carries none (default 26)")
+        sp.add_argument("--mode", choices=["ground", "drone", "aircraft"], default="ground",
+                        help="who held the camera: bounds its tilt (ground -20…25°, drone -80…25°, aircraft -80…15°)")
+        sp.add_argument("--tilt", help="camera tilt bounds a:b degrees, up positive (overrides --mode)")
+        sp.add_argument("--roll-max", type=float, default=5.0, help="most the camera may roll, degrees (default 5)")
+        sp.add_argument("--facing", help="compass directions the camera may face, e.g. N,NE (each the 45° about it); tick neighbours when unsure")
+        sp.add_argument("--heading", help="or a sector of headings a:b, degrees clockwise from north (e.g. 200:260)")
+        sp.add_argument("--reach", default="auto",
+                        help="how far the photo sees, km: the skyline is read cut there and at twice it (default auto: cut at 5, 10, 20 and 50 km, "
+                             "since haze hides far ridges the terrain still holds)")
+        sp.add_argument("--clear", action="store_true", help="only sky above the traced line, nothing hidden by haze: read the skyline to the full reach only")
+        sp.add_argument("--dist", help="where the traced skyline stands, km a:b (e.g. 1:4); ground nearer or farther (×/÷1.33) counts as off")
+        sp.add_argument("--floor", type=float, default=250.0,
+                        help="ground nearer than this, m, cannot be the skyline unless --dist says so: the eye's own slope (default 250; 0 allows it)")
+        sp.add_argument("--eye", type=float, default=1.6, help="eye height above the ground, m (default 1.6; a drone's height above the ground)")
+        sp.add_argument("--floors", type=int, help="taken from a building: storeys above the ground, 3 m each (on a slope, give fewer)")
+        sp.add_argument("--key", help="pixel columns of stretches you would know anywhere (a peak, a notch): x0:x1[,x0:x1]")
+        sp.add_argument("--selfie", action="store_true", help="the photo may be mirrored (front camera): search it both ways, twice as long")
+        sp.add_argument("--zoom", type=int, default=13, help="finest terrain level (default 13 ≈ 19 m a cell; 14 where a national survey is finer)")
+        sp.add_argument("--workers", type=int, default=0, help="processes scoring points (default: CPU count - 2, at most 8)")
+        sp.add_argument("--photo", help="photo for the overlays (default: the path recorded in the trace)")
+        sp.add_argument("--sheet-width", type=int, default=480, help="width of each overlay, px (default 480)")
+        sp.add_argument("--out", required=True, help="output JSON")
+
+    fd = sub.add_parser("find", formatter_class=argparse.RawDescriptionHelpFormatter, description="""\
+Search an area for where the photo was taken from its skyline: every point of a grid gets the skyline the terrain
+draws from it, the trace is slid over every heading, lens, tilt and roll, and the point is scored by how much of
+the trace's SHAPE the terrain there explains (0% = no better than a straight line, 100% = every peak and notch on
+the terrain). Points are ranked roughly, refined three by three around the best, filled in finer where the ridges
+stand near, and the best places polished in full and checked against decoys of the trace (mirrored, upside down).
+
+The answer is a short list, not a proof: read `trust` and its reasons (solid / check / weak), then confirm the
+best places with `terrain.py view --overlay --peaks`, imagery and a second constraint. references/skyline.md.
+
+Output JSON (--out): {params, trace: {points, turns, shape_px, …}, scored_points, seconds, chance (what the area
+explains by chance: the top tenth of its points), around_best, verdict (match / loose / ambiguous / none / flat),
+trust (solid / check / weak), reasons, places: [{lat, lon, explained, decoy, heading, hfov, tilt, roll, reach_km,
+ridge_km, lost, from_best_m, second_heading, rough}, …], truth (with --truth), view (command for the best place)}""")
+    search_opts(fd)
+    area = fd.add_mutually_exclusive_group(required=True)
+    area.add_argument("--bbox", help="the area s,w,n,e")
+    area.add_argument("--at", help="the area's centre lat,lon (with --radius)")
+    fd.add_argument("--radius", type=float, help="the area's radius about --at, m")
+    fd.add_argument("--spacing", type=float, help="grid spacing, m (default: about 1,600 points over the area, 60–2000 m)")
+    fd.add_argument("--stands", help="where the eye may stand: summit,slope,valley,plain,water (default all but water)")
+    fd.add_argument("--quick", action="store_true", help="a grid twice as coarse and one refinement: finds the region, then search finer around it")
+    fd.add_argument("--top", type=int, default=10, help="places listed (default 10)")
+    fd.add_argument("--sheet", help="overlays of the best places (jpg)")
+    fd.add_argument("--sheet-n", type=int, default=6, help="places drawn on --sheet (default 6)")
+    fd.add_argument("--heat", help="map of the scores over the area (png)")
+    fd.add_argument("--truth", help="lat,lon of the known camera position, for benchmarks: scored and compared")
+
+    ck = sub.add_parser("check", formatter_class=argparse.RawDescriptionHelpFormatter, description="""\
+Score one place against the photo's skyline: every heading, lens, tilt and roll searched finely and polished,
+the headings that fit listed apart, a decoy check, and an overlay. For a candidate found by other clues; with
+--radius, the best spot within that distance (a candidate's pin is often a few hundred metres off).
+verdict: match (one heading clearly), loose (under half the shape), ambiguous (another heading fits about as
+well), none, flat (the trace has no shape to place). references/skyline.md.""")
+    search_opts(ck)
+    ck.add_argument("--at", required=True, help="the place lat,lon")
+    ck.add_argument("--radius", type=float, default=0.0, help="also try the ground within this many metres (default 0)")
+    ck.add_argument("--spacing", type=float, help="spacing of those tries, m (default radius / 6, at least 25)")
+    ck.add_argument("--overlay", dest="overlay_out", help="overlay of the best fit (jpg)")
+
     args = ap.parse_args(_neg_coords(sys.argv[1:]))
+    DEM_SOURCE = args.dem
+    if args.cmd in ("find", "check"):
+        import _skyfind  # noqa: PLC0415
+        (_skyfind.cmd_find if args.cmd == "find" else _skyfind.cmd_check)(args, _fetch)
+        return
     if args.cmd == "scan":
         _cmd_scan(args)
         return
@@ -1090,6 +1345,14 @@ Output JSON (--out):
     title = (f"camera {lat:.5f},{lon:.5f}  ground {ground:.0f} m eye {eye:.0f} m  heading {args.heading % 360:.0f}°  "
              f"hfov {args.hfov:.0f}°  farthest skyline {np.nanmax(sky_dist) / 1000:.1f} km")
     im = annotate(im, az, args.pitch, vfov, title)
+    peaks = []
+    if args.peaks:
+        peaks = _peaks(dem, (lat, lon), eye, args.heading, args.hfov, args.range, args.near, args.proxy)
+        top = args.pitch + vfov / 2
+        _label_peaks(ImageDraw.Draw(im), peaks, lambda p: ((p["off"] + args.hfov / 2) / args.hfov * (args.width - 1),
+                                                           (top - p["el"]) / vfov * (height - 1)), 15)
+        print(f"{len(peaks)} named summits in view: " + "; ".join(
+            f"{p['name']} {p['ele']} m at {p['off']:+.1f}° {p['el']:.2f}° up, {p['dist'] / 1000:.1f} km{'' if p['seen'] else ' (hidden)'}" for p in peaks))
     if args.roll:
         im = im.rotate(-args.roll, resample=Image.BICUBIC, fillcolor=(255, 255, 255))
     if args.photo and args.overlay:
@@ -1104,6 +1367,12 @@ Output JSON (--out):
             y = -fpx * math.tan(math.radians(e - args.pitch)) / math.cos(math.radians(a - args.heading))
             pts.append((ph.width / 2 + x * cr - y * sr, ph.height / 2 + x * sr + y * cr))
         ImageDraw.Draw(ph).line(pts, fill=(255, 40, 40), width=max(2, ph.width // 400))
+
+        def on_photo(p):
+            x = fpx * math.tan(math.radians(p["off"]))
+            y = -fpx * math.tan(math.radians(p["el"] - args.pitch)) / math.cos(math.radians(p["off"]))
+            return ph.width / 2 + x * cr - y * sr, ph.height / 2 + x * sr + y * cr
+        _label_peaks(ImageDraw.Draw(ph), peaks, on_photo, max(14, ph.width // 90))
         ov = args.out.with_name(args.out.stem + "_overlay" + args.out.suffix)
         ph.save(ov, quality=90)
         print(f"skyline overlaid on photo -> {ov} (if the red line doesn't match the photo's ridgeline, first adjust --heading/--pitch/--hfov/--roll, then suspect the camera position)")

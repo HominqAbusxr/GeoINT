@@ -111,7 +111,7 @@ uv run scripts/tiles.py sheet --points cands.json --zoom 19 --out cands_sheet.jp
 Section 4's co-occurrence queries can only use OSM tags; "a steep mountain in the distance" can't be written into them. The method is to connect each point on the infrastructure to elevation data, compute the horizon, and filter a whole large region at once. This is the single source for the method (one real case: about 27,000 railway-bridge segments in one large region (about 25,000 of them electrified or untagged) → 171 clusters, ground truth among them).
 
 1. `osm.py geom '<infrastructure filter>' --bbox <large region> --out lines.geojson` to get the lines.
-2. `terrain.py scan` samples points along the lines, computes a 360° horizon at each point from Terrarium elevation, filters by shape conditions and clusters:
+2. `terrain.py scan` samples points along the lines, computes a 360° horizon at each point from the elevation tiles (Mapterhorn; AWS Terrarium as fallback), filters by shape conditions and clusters:
 
 ```bash
 uv run ${CLAUDE_SKILL_DIR}/scripts/terrain.py scan --lines lines.geojson --out hits.json \
